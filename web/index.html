@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Copilot Tracer</title>
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, monospace; font-size: 13px; }
+  
+  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
+  header h1 { color: #58a6ff; font-size: 16px; font-weight: 700; }
+  .badge { background: #21262d; border: 1px solid #30363d; border-radius: 12px; padding: 2px 10px; font-size: 11px; color: #8b949e; }
+  .badge.live { border-color: #238636; color: #3fb950; }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  .stats-bar { background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 20px; display: flex; gap: 24px; }
+  .stat { display: flex; flex-direction: column; }
+  .stat-label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 15px; font-weight: 700; color: #e6edf3; }
+  .stat-value.credits { color: #f0883e; }
+  .stat-value.tokens { color: #79c0ff; }
+  .stat-value.skills { color: #d2a8ff; }
+  .stat-value.mcps { color: #56d364; }
+
+  .main { display: flex; height: calc(100vh - 100px); }
+  .table-panel { flex: 1; overflow: auto; }
+  .detail-panel { width: 420px; border-left: 1px solid #30363d; background: #161b22; overflow: auto; display: none; flex-direction: column; }
+  .detail-panel.open { display: flex; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: #161b22; color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 12px; text-align: left; position: sticky; top: 0; border-bottom: 1px solid #30363d; cursor: pointer; user-select: none; white-space: nowrap; }
+  thead th:hover { color: #c9d1d9; }
+  .totals-row td { background: #1c2128; font-weight: 700; color: #e6edf3; padding: 7px 12px; border-bottom: 2px solid #30363d; font-size: 12px; }
+  tbody tr { border-bottom: 1px solid #21262d; cursor: pointer; transition: background 0.1s; }
+  tbody tr:hover { background: #1c2128; }
+  tbody tr.selected { background: #1f3358; }
+  tbody tr.running td:first-child { border-left: 3px solid #f0883e; }
+  tbody tr.done td:first-child { border-left: 3px solid #3fb950; }
+  tbody tr.error td:first-child { border-left: 3px solid #f85149; }
+  td { padding: 7px 12px; vertical-align: top; }
+  .td-datetime { color: #8b949e; font-size: 11px; white-space: nowrap; }
+  .td-prompt { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e6edf3; }
+  .td-credits { color: #f0883e; white-space: nowrap; }
+  .td-duration { color: #8b949e; white-space: nowrap; }
+  .td-tokens { font-family: monospace; font-size: 11px; }
+  .tok-cached { color: #79c0ff; }
+  .tok-written { color: #56d364; }
+  .tok-reason { color: #d2a8ff; cursor: pointer; text-decoration: underline dotted; }
+  .tok-reason:hover { color: #f0883e; }
+  .td-count { text-align: center; }
+  .pill { display: inline-block; border-radius: 10px; padding: 1px 7px; font-size: 11px; cursor: pointer; }
+  .pill-skill { background: #2d1b69; color: #d2a8ff; }
+  .pill-agent { background: #0d2942; color: #79c0ff; }
+  .pill-mcp { background: #0a3622; color: #56d364; }
+  .pill:hover { opacity: 0.8; filter: brightness(1.2); }
+
+  /* Detail panel */
+  .detail-header { padding: 14px 16px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+  .detail-header h3 { color: #58a6ff; font-size: 13px; }
+  .close-btn { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 18px; line-height: 1; }
+  .close-btn:hover { color: #e6edf3; }
+  .detail-body { padding: 12px 16px; flex: 1; overflow: auto; }
+  .detail-section { margin-bottom: 16px; }
+  .detail-section h4 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .detail-box { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+  .detail-box.reasoning { color: #d2a8ff; }
+  .detail-box.response { color: #56d364; }
+  .detail-box.prompt { color: #e6edf3; }
+
+  /* Call graph */
+  .call-tree { font-family: monospace; font-size: 12px; }
+  .call-node { padding: 4px 0; }
+  .call-node-header { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 6px; border-radius: 4px; }
+  .call-node-header:hover { background: #21262d; }
+  .call-expand { color: #8b949e; width: 14px; text-align: center; }
+  .call-name { font-weight: 600; }
+  .call-duration { color: #8b949e; margin-left: auto; font-size: 11px; }
+  .call-children { margin-left: 18px; border-left: 1px solid #30363d; padding-left: 8px; }
+  .call-io { background: #0d1117; border-radius: 4px; padding: 6px 8px; margin: 4px 0 4px 20px; font-size: 11px; color: #8b949e; }
+  .call-io .label { color: #58a6ff; margin-right: 4px; }
+  .call-io.error { color: #f85149; }
+
+  /* Token detail modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; width: 560px; max-height: 80vh; overflow: auto; }
+  .modal h3 { color: #58a6ff; margin-bottom: 12px; }
+  .modal-close { float: right; background: none; border: none; color: #8b949e; cursor: pointer; font-size: 20px; margin-top: -4px; }
+
+  .empty { padding: 40px; text-align: center; color: #8b949e; }
+</style>
+</head>
+<body>
+
+<header>
+  <span id="status-dot"></span>
+  <h1>🤖 Copilot Tracer</h1>
+  <span class="badge live">LIVE</span>
+  <span class="badge" id="session-badge">Session: —</span>
+</header>
+
+<div class="stats-bar">
+  <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
+  <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">$0.0000</span></div>
+  <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
+  <div class="stat"><span class="stat-label">Cached</span><span class="stat-value tokens" id="s-cached">0</span></div>
+  <div class="stat"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#d2a8ff" id="s-reasoning">0</span></div>
+  <div class="stat"><span class="stat-label">Skill Calls</span><span class="stat-value skills" id="s-skills">0</span></div>
+  <div class="stat"><span class="stat-label">Agent Calls</span><span class="stat-value tokens" id="s-agents">0</span></div>
+  <div class="stat"><span class="stat-label">MCP Calls</span><span class="stat-value mcps" id="s-mcps">0</span></div>
+  <div class="stat"><span class="stat-label">Total Duration</span><span class="stat-value" id="s-duration">0s</span></div>
+</div>
+
+<div class="main">
+  <div class="table-panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Date / Time</th>
+          <th>Prompt</th>
+          <th>AI Credits</th>
+          <th>Duration</th>
+          <th>Cached Tokens</th>
+          <th>Written Tokens</th>
+          <th>Reasoning Tokens</th>
+          <th>Skills</th>
+          <th>Agents</th>
+          <th>MCPs</th>
+        </tr>
+      </thead>
+      <tbody id="trace-tbody">
+        <tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-panel" id="detail-panel">
+    <div class="detail-header">
+      <h3 id="detail-title">Trace Detail</h3>
+      <button class="close-btn" onclick="closeDetail()">×</button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </div>
+</div>
+
+<!-- Token detail modal -->
+<div class="modal-overlay" id="token-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <h3 id="modal-title">Reasoning Detail</h3>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+  let traces = {};
+  let summary = null;
+  let selectedId = null;
+
+  socket.on('init', (data) => {
+    data.traces.forEach(t => traces[t.id] = t);
+    summary = data.summary;
+    render();
+  });
+
+  socket.on('trace:update', (t) => {
+    traces[t.id] = t;
+    updateSummaryFromTraces();
+    render();
+    if (selectedId === t.id) renderDetail(t);
+  });
+
+  socket.on('trace:done', (t) => {
+    traces[t.id] = t;
+    updateSummaryFromTraces();
+    render();
+  });
+
+  function updateSummaryFromTraces() {
+    const arr = Object.values(traces);
+    summary = {
+      totalEntries: arr.length,
+      totalCredits: arr.reduce((s, t) => s + (t.aiCredits || 0), 0),
+      totalTokens: {
+        total: arr.reduce((s, t) => s + (t.tokens?.total || 0), 0),
+        cached: arr.reduce((s, t) => s + (t.tokens?.cached || 0), 0),
+        reasoning: arr.reduce((s, t) => s + (t.tokens?.reasoning || 0), 0),
+      },
+      totalSkillCalls: arr.reduce((s, t) => s + (t.skillCount || 0), 0),
+      totalAgentCalls: arr.reduce((s, t) => s + (t.agentCount || 0), 0),
+      totalMcpCalls: arr.reduce((s, t) => s + (t.mcpCount || 0), 0),
+      totalDurationMs: arr.reduce((s, t) => s + (t.durationMs || 0), 0),
+    };
+  }
+
+  function fmtDuration(ms) {
+    if (!ms) return '—';
+    return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
+  }
+
+  function fmtCredits(c) { return '$' + (c||0).toFixed(4); }
+
+  function fmtDateTime(dt) {
+    if (!dt) return '—';
+    const d = new Date(dt);
+    return d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit'}) + ' ' +
+           d.toLocaleTimeString('en-US',{hour12:false});
+  }
+
+  function render() {
+    // Stats bar
+    if (summary) {
+      document.getElementById('s-prompts').textContent = summary.totalEntries;
+      document.getElementById('s-credits').textContent = fmtCredits(summary.totalCredits);
+      document.getElementById('s-tokens').textContent = (summary.totalTokens?.total || 0).toLocaleString();
+      document.getElementById('s-cached').textContent = (summary.totalTokens?.cached || 0).toLocaleString();
+      document.getElementById('s-reasoning').textContent = (summary.totalTokens?.reasoning || 0).toLocaleString();
+      document.getElementById('s-skills').textContent = summary.totalSkillCalls;
+      document.getElementById('s-agents').textContent = summary.totalAgentCalls;
+      document.getElementById('s-mcps').textContent = summary.totalMcpCalls;
+      document.getElementById('s-duration').textContent = fmtDuration(summary.totalDurationMs);
+    }
+
+    const arr = Object.values(traces).sort((a, b) => new Date(b.dateTime) - new Date(a.dateTime));
+    const tbody = document.getElementById('trace-tbody');
+
+    if (arr.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = arr.map(t => `
+      <tr class="${t.status} ${selectedId === t.id ? 'selected' : ''}" onclick="selectTrace('${t.id}')">
+        <td class="td-datetime">${fmtDateTime(t.dateTime)}</td>
+        <td class="td-prompt" title="${(t.prompt||'').replace(/"/g,'&quot;')}">${escHtml(truncate(t.prompt||'', 60))}</td>
+        <td class="td-credits" onclick="event.stopPropagation(); showCreditDetail('${t.id}')">${fmtCredits(t.aiCredits)}</td>
+        <td class="td-duration">${fmtDuration(t.durationMs)}</td>
+        <td class="td-tokens"><span class="tok-cached">${t.tokens?.cached||0}</span></td>
+        <td class="td-tokens"><span class="tok-written">${t.tokens?.written||0}</span></td>
+        <td class="td-tokens"><span class="tok-reason" onclick="event.stopPropagation(); showReasoningDetail('${t.id}')">${t.tokens?.reasoning||0}</span></td>
+        <td class="td-count"><span class="pill pill-skill" onclick="event.stopPropagation(); showCallDetail('${t.id}','skill')">${t.skillCount||0}</span></td>
+        <td class="td-count"><span class="pill pill-agent" onclick="event.stopPropagation(); showCallDetail('${t.id}','agent')">${t.agentCount||0}</span></td>
+        <td class="td-count"><span class="pill pill-mcp" onclick="event.stopPropagation(); showCallDetail('${t.id}','mcp')">${t.mcpCount||0}</span></td>
+      </tr>
+    `).join('');
+  }
+
+  function selectTrace(id) {
+    selectedId = id;
+    const t = traces[id];
+    if (!t) return;
+    document.getElementById('detail-panel').classList.add('open');
+    renderDetail(t);
+    render();
+  }
+
+  function closeDetail() {
+    selectedId = null;
+    document.getElementById('detail-panel').classList.remove('open');
+    render();
+  }
+
+  function renderDetail(t) {
+    document.getElementById('detail-title').textContent = truncate(t.prompt || 'Trace Detail', 50);
+    const body = document.getElementById('detail-body');
+    body.innerHTML = `
+      <div class="detail-section">
+        <h4>Prompt</h4>
+        <div class="detail-box prompt">${escHtml(t.prompt||'')}</div>
+      </div>
+      ${t.reasoning ? `
+      <div class="detail-section">
+        <h4>Reasoning (${t.tokens?.reasoning||0} tokens)</h4>
+        <div class="detail-box reasoning">${escHtml(t.reasoning)}</div>
+      </div>` : ''}
+      ${t.response ? `
+      <div class="detail-section">
+        <h4>Response</h4>
+        <div class="detail-box response">${escHtml(t.response)}</div>
+      </div>` : ''}
+      <div class="detail-section">
+        <h4>Token Breakdown</h4>
+        <div class="detail-box">
+Input:     ${(t.tokens?.input||0).toLocaleString()}
+Cached:    ${(t.tokens?.cached||0).toLocaleString()}
+Written:   ${(t.tokens?.written||0).toLocaleString()}
+Reasoning: ${(t.tokens?.reasoning||0).toLocaleString()}
+Output:    ${(t.tokens?.output||0).toLocaleString()}
+Total:     ${(t.tokens?.total||0).toLocaleString()}
+AI Credits: ${fmtCredits(t.aiCredits)}
+        </div>
+      </div>
+      ${t.toolCalls?.length ? `
+      <div class="detail-section">
+        <h4>Call Graph (${t.toolCalls.length} calls)</h4>
+        <div class="call-tree">${renderCallTree(t.toolCalls, 0)}</div>
+      </div>` : ''}
+      ${t.error ? `
+      <div class="detail-section">
+        <h4>Error</h4>
+        <div class="detail-box" style="color:#f85149">${escHtml(t.error)}</div>
+      </div>` : ''}
+    `;
+  }
+
+  function renderCallTree(calls, depth) {
+    if (!calls || !calls.length) return '';
+    return calls.map(c => {
+      const typeColor = c.type === 'mcp' ? '#56d364' : c.type === 'skill' ? '#d2a8ff' : c.type === 'agent' ? '#79c0ff' : '#8b949e';
+      const dur = c.durationMs ? ` ${c.durationMs}ms` : c.startedAt ? ' running...' : '';
+      const inputStr = c.input ? JSON.stringify(c.input, null, 2) : '';
+      const outputStr = c.output ? JSON.stringify(c.output, null, 2).slice(0, 300) : '';
+      const errorStr = c.error || '';
+      const hasChildren = c.children && c.children.length > 0;
+      const nodeId = 'node-' + c.id;
+
+      return `
+        <div class="call-node">
+          <div class="call-node-header" onclick="toggleNode('${nodeId}')">
+            <span class="call-expand">${hasChildren ? '▶' : '·'}</span>
+            <span class="call-name" style="color:${typeColor}">[${c.type.toUpperCase()}]</span>
+            <span>${escHtml(c.name)}</span>
+            <span class="call-duration">${dur}</span>
+          </div>
+          <div id="${nodeId}" style="display:none">
+            ${inputStr ? `<div class="call-io"><span class="label">IN:</span>${escHtml(inputStr.slice(0,200))}</div>` : ''}
+            ${outputStr ? `<div class="call-io"><span class="label">OUT:</span>${escHtml(outputStr)}</div>` : ''}
+            ${errorStr ? `<div class="call-io error"><span class="label">ERR:</span>${escHtml(errorStr)}</div>` : ''}
+            ${hasChildren ? `<div class="call-children">${renderCallTree(c.children, depth+1)}</div>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function toggleNode(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    const header = el?.previousElementSibling?.querySelector('.call-expand');
+    if (header) header.textContent = el.style.display === 'none' ? '▶' : '▼';
+  }
+
+  function showReasoningDetail(id) {
+    const t = traces[id];
+    if (!t) return;
+    document.getElementById('modal-title').textContent = `Reasoning Tokens: ${t.tokens?.reasoning||0}`;
+    document.getElementById('modal-body').innerHTML = `
+      <div style="margin-bottom:12px; color:#8b949e; font-size:12px">
+        Prompt: ${escHtml(truncate(t.prompt||'',80))}
+      </div>
+      ${t.reasoning ? `
+        <div class="detail-box reasoning" style="max-height:300px">${escHtml(t.reasoning)}</div>
+      ` : '<p style="color:#8b949e">No reasoning captured for this turn.</p>'}
+      ${t.toolCalls?.length ? `
+        <h4 style="margin-top:14px; margin-bottom:8px; color:#8b949e; font-size:11px; text-transform:uppercase">Call Graph</h4>
+        <div class="call-tree">${renderCallTree(t.toolCalls, 0)}</div>
+      ` : ''}
+    `;
+    document.getElementById('token-modal').classList.add('open');
+  }
+
+  function showCreditDetail(id) {
+    const t = traces[id];
+    if (!t) return;
+    document.getElementById('modal-title').textContent = `AI Credits: ${fmtCredits(t.aiCredits)}`;
+    document.getElementById('modal-body').innerHTML = `
+      <div class="detail-box" style="line-height:2">
+Input tokens:     ${(t.tokens?.input||0).toLocaleString()} × $0.003/1k = $${((t.tokens?.input||0)/1000*0.003).toFixed(5)}
+Written tokens:   ${(t.tokens?.written||0).toLocaleString()} × $0.006/1k = $${((t.tokens?.written||0)/1000*0.006).toFixed(5)}
+Reasoning tokens: ${(t.tokens?.reasoning||0).toLocaleString()} × $0.009/1k = $${((t.tokens?.reasoning||0)/1000*0.009).toFixed(5)}
+─────────────────────────────────────────
+Total AI Credits: ${fmtCredits(t.aiCredits)}
+Duration:         ${fmtDuration(t.durationMs)}
+      </div>
+    `;
+    document.getElementById('token-modal').classList.add('open');
+  }
+
+  function showCallDetail(id, type) {
+    const t = traces[id];
+    if (!t) return;
+    const calls = (t.toolCalls || []).filter(c => c.type === type);
+    const label = type.toUpperCase();
+    document.getElementById('modal-title').textContent = `${label} Calls (${calls.length})`;
+    document.getElementById('modal-body').innerHTML = calls.length
+      ? `<div class="call-tree">${renderCallTree(calls, 0)}</div>`
+      : `<p style="color:#8b949e">No ${label} calls in this turn.</p>`;
+    document.getElementById('token-modal').classList.add('open');
+  }
+
+  function closeModal() { document.getElementById('token-modal').classList.remove('open'); }
+
+  document.getElementById('token-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+  });
+
+  function truncate(s, n) { return s.length > n ? s.slice(0,n-1)+'…' : s; }
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+</script>
+</body>
+</html>
