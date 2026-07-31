@@ -13,7 +13,7 @@ function fmtDuration(ms: number): string {
 }
 
 function fmtCredits(c: number): string {
-  return `${c.toFixed(2)} cr`;
+  return `${c.toFixed(2)} cr | $${(c * 0.01).toFixed(4)}`;
 }
 
 function statusColor(status: TraceEntry['status'], text: string): string {

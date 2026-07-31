@@ -10,7 +10,7 @@ function fmtDuration(ms) {
     return `${(ms / 1000).toFixed(1)}s`;
 }
 function fmtCredits(c) {
-    return `${c.toFixed(2)} cr`;
+    return `${c.toFixed(2)} cr | $${(c * 0.01).toFixed(4)}`;
 }
 function statusColor(status, text) {
     if (status === 'running')

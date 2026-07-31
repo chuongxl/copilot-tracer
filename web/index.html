@@ -104,7 +104,7 @@
 
 <div class="stats-bar">
   <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
-  <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">$0.0000</span></div>
+  <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">0.00 cr | $0.0000</span></div>
   <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
   <div class="stat"><span class="stat-label">Cached</span><span class="stat-value tokens" id="s-cached">0</span></div>
   <div class="stat"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#d2a8ff" id="s-reasoning">0</span></div>
@@ -202,7 +202,7 @@
     return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
   }
 
-  function fmtCredits(c) { return '$' + (c||0).toFixed(4); }
+  function fmtCredits(c) { return (c||0).toFixed(2) + ' cr | $' + ((c||0)*0.01).toFixed(4); }
 
   function fmtDateTime(dt) {
     if (!dt) return '—';
