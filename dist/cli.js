@@ -3,6 +3,7 @@ import { program } from 'commander';
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import readline from 'readline';
+import fs from 'fs';
 import { createSession, getTraces, getSessionSummary } from './db.js';
 import { handleAcpMessage, traceEvents } from './proxy.js';
 import { renderConsoleTable } from './consoleUi.js';
@@ -55,7 +56,7 @@ if (opts.proxy !== false) {
     const stdinRl = readline.createInterface({ input: process.stdin });
     const stdoutRl = readline.createInterface({ input: child.stdout });
     const debug = opts.debug === true;
-    const logFile = debug ? require('fs').createWriteStream(`/tmp/copilot-tracer-${sessionId.slice(0, 8)}.ndjson`, { flags: 'a' }) : null;
+    const logFile = debug ? fs.createWriteStream(`/tmp/copilot-tracer-${sessionId.slice(0, 8)}.ndjson`, { flags: 'a' }) : null;
     function debugLog(direction, raw, parsed) {
         if (!debug)
             return;
@@ -63,33 +64,33 @@ if (opts.proxy !== false) {
         process.stderr.write('[TRACER] ' + entry + '\n');
         logFile?.write(entry + '\n');
     }
-    // stdin → copilot (user → model)
+    // stdin → copilot (user → copilot = 'out' direction from user's perspective)
     stdinRl.on('line', (line) => {
         let parsed;
         try {
             parsed = JSON.parse(line);
-            handleAcpMessage(sessionId, parsed, 'in');
+            handleAcpMessage(sessionId, parsed, 'out'); // outbound = user sending to copilot
         }
         catch (e) {
             // Not JSON — plain text from terminal, not ACP
             if (debug)
                 process.stderr.write(`[TRACER] stdin non-JSON: ${line}\n`);
         }
-        debugLog('→ IN', line, parsed);
+        debugLog('→ copilot', line, parsed);
         child.stdin.write(line + '\n');
     });
-    // copilot → stdout (model → user)
+    // copilot → stdout (copilot → user = 'in' direction from user's perspective)
     stdoutRl.on('line', (line) => {
         let parsed;
         try {
             parsed = JSON.parse(line);
-            handleAcpMessage(sessionId, parsed, 'out');
+            handleAcpMessage(sessionId, parsed, 'in'); // inbound = copilot sending to user
         }
         catch (e) {
             if (debug)
                 process.stderr.write(`[TRACER] stdout non-JSON: ${line}\n`);
         }
-        debugLog('← OUT', line, parsed);
+        debugLog('← copilot', line, parsed);
         process.stdout.write(line + '\n');
     });
     child.on('exit', (code) => {

@@ -17,25 +17,28 @@ interface ActiveTrace {
   entry: TraceEntry;
   startMs: number;
   toolCallStack: ToolCall[];
+  promptId: string | number;  // The JSON-RPC id of the session/prompt request
 }
 
 export const traceEvents = new EventEmitter();
 
-const activeTraces = new Map<string, ActiveTrace>();
+const activeTraces = new Map<string, ActiveTrace>();  // keyed by sessionId
+const pendingPrompts = new Map<string | number, string>();  // id → sessionId
 
 // GitHub AI Credits: 1 credit = $0.01 USD
-// Credits = token_cost_in_dollars / 0.01
 // Rates based on official Copilot model pricing (credits per 1k tokens)
-// See: https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
 const CREDITS_PER_1K: Record<string, { input: number; output: number; reasoning: number }> = {
-  'claude-sonnet-4.6':   { input: 0.3,   output: 1.5,  reasoning: 3.75 }, // $3/$15/$37.5 per 1M
+  'claude-sonnet-5':     { input: 0.3,   output: 1.5,  reasoning: 3.75 },
+  'claude-sonnet-4.6':   { input: 0.3,   output: 1.5,  reasoning: 3.75 },
   'claude-sonnet-4':     { input: 0.3,   output: 1.5,  reasoning: 3.75 },
-  'claude-opus-4':       { input: 1.5,   output: 7.5,  reasoning: 7.5  }, // $15/$75 per 1M
-  'gpt-4.1':             { input: 0.2,   output: 0.8,  reasoning: 0.8  }, // $2/$8 per 1M
-  'gpt-4o':              { input: 0.25,  output: 1.0,  reasoning: 1.0  }, // $2.5/$10 per 1M
-  'gemini-2.0-flash':    { input: 0.01,  output: 0.04, reasoning: 0.04 }, // $0.1/$0.4 per 1M
-  'gemini-1.5-pro':      { input: 0.125, output: 0.5,  reasoning: 0.5  }, // $1.25/$5 per 1M
-  'default':             { input: 0.3,   output: 1.5,  reasoning: 3.75 }, // fallback = sonnet-4.6
+  'claude-haiku-4.5':    { input: 0.025, output: 0.125,reasoning: 0.25 },
+  'claude-opus-5':       { input: 1.5,   output: 7.5,  reasoning: 7.5  },
+  'claude-opus-4':       { input: 1.5,   output: 7.5,  reasoning: 7.5  },
+  'gpt-4.1':             { input: 0.2,   output: 0.8,  reasoning: 0.8  },
+  'gpt-4o':              { input: 0.25,  output: 1.0,  reasoning: 1.0  },
+  'gemini-2.0-flash':    { input: 0.01,  output: 0.04, reasoning: 0.04 },
+  'gemini-1.5-pro':      { input: 0.125, output: 0.5,  reasoning: 0.5  },
+  'default':             { input: 0.3,   output: 1.5,  reasoning: 3.75 }, // fallback
 };
 
 function calcCredits(tokens: TokenUsage, model = 'default'): number {
@@ -63,127 +66,183 @@ function countByType(calls: ToolCall[]) {
 }
 
 export function handleAcpMessage(sessionId: string, msg: AcpMessage, direction: 'in' | 'out'): void {
-  // Incoming prompt from user → start a new trace
-  if (direction === 'in' && msg.method === 'conversation/turn' && msg.params) {
-    const params = msg.params as Record<string, unknown>;
-    const prompt = (params.content as string) || JSON.stringify(params);
-    const traceId = String(msg.id ?? randomUUID());
+  // ── OUTBOUND (client → copilot) ──────────────────────────────────────────
+  if (direction === 'out') {
+    // session/prompt: user sent a new prompt
+    if (msg.method === 'session/prompt' && msg.params) {
+      const params = msg.params as Record<string, unknown>;
+      const acpSessionId = String(params.sessionId ?? sessionId);
 
-    const entry: TraceEntry = {
-      id: traceId,
-      sessionId,
-      dateTime: new Date().toISOString(),
-      prompt,
-      tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
-      aiCredits: 0,
-      durationMs: 0,
-      toolCalls: [],
-      skillCount: 0,
-      agentCount: 0,
-      mcpCount: 0,
-      status: 'running',
-    };
-    activeTraces.set(traceId, { entry, startMs: Date.now(), toolCallStack: [] });
-    upsertTrace(entry);
-    traceEvents.emit('trace:update', entry);
+      // Extract prompt text from ACP prompt array: [{type:"text", text:"..."}]
+      let promptText = '';
+      const promptArr = params.prompt as Array<{type: string; text?: string}> | undefined;
+      if (Array.isArray(promptArr)) {
+        promptText = promptArr
+          .filter(p => p.type === 'text' && p.text)
+          .map(p => p.text!)
+          .join(' ');
+      }
+      if (!promptText) promptText = JSON.stringify(params);
+
+      const traceId = String(msg.id ?? randomUUID());
+
+      const entry: TraceEntry = {
+        id: traceId,
+        sessionId,        // use the tracer session ID, not ACP session ID
+        dateTime: new Date().toISOString(),
+        prompt: promptText,
+        tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+        aiCredits: 0,
+        durationMs: 0,
+        toolCalls: [],
+        skillCount: 0,
+        agentCount: 0,
+        mcpCount: 0,
+        status: 'running',
+      };
+
+      // Store keyed by ACP session ID for notification correlation
+      activeTraces.set(acpSessionId, { entry, startMs: Date.now(), toolCallStack: [], promptId: msg.id! });
+      if (msg.id !== undefined) pendingPrompts.set(msg.id, acpSessionId);
+
+      upsertTrace(entry);
+      traceEvents.emit('trace:update', entry);
+    }
+
+    // session/command or tool_call_result going back — nothing to capture on out direction for tools
   }
 
-  // Tool call initiated
-  if (direction === 'out' && msg.method === 'tools/call' && msg.params) {
-    const params = msg.params as Record<string, unknown>;
-    const toolName = String(params.name ?? 'unknown');
-    const toolType = detectToolType(toolName);
-    const callId = String(msg.id ?? randomUUID());
+  // ── INBOUND (copilot → client) ───────────────────────────────────────────
+  if (direction === 'in') {
+    // session/update notifications — all streaming events
+    if (msg.method === 'session/update' && msg.params) {
+      const params = msg.params as Record<string, unknown>;
+      const acpSessionId = String(params.sessionId ?? sessionId);
+      const update = (params.update ?? {}) as Record<string, unknown>;
+      const updateType = String(update.sessionUpdate ?? '');
+      const active = activeTraces.get(acpSessionId);
+      if (!active) return;
 
-    const call: ToolCall = {
-      id: callId,
-      name: toolName,
-      type: toolType,
-      input: (params.arguments as Record<string, unknown>) ?? {},
-      startedAt: Date.now(),
-    };
-
-    // Attach to most recent active trace
-    for (const [, active] of activeTraces) {
-      if (active.entry.status === 'running') {
+      if (updateType === 'agent_message_chunk') {
+        // Text chunk of AI response — accumulate
+        const content = (update.content as {type: string; text?: string}) ?? {};
+        if (content.text) {
+          active.entry.response = (active.entry.response ?? '') + content.text;
+        }
+      } else if (updateType === 'tool_call_start' || updateType === 'tool_call_begin') {
+        // Tool call starting
+        const toolName = String(update.toolName ?? update.name ?? 'unknown');
+        const toolType = detectToolType(toolName);
+        const callId = String(update.callId ?? update.id ?? randomUUID());
+        const call: ToolCall = {
+          id: callId,
+          name: toolName,
+          type: toolType,
+          input: (update.arguments ?? update.input ?? {}) as Record<string, unknown>,
+          startedAt: Date.now(),
+        };
         active.entry.toolCalls.push(call);
         active.toolCallStack.push(call);
         upsertTrace(active.entry);
         traceEvents.emit('trace:update', active.entry);
-        break;
-      }
-    }
-  }
-
-  // Tool call result
-  if (direction === 'in' && msg.id !== undefined && msg.result !== undefined) {
-    for (const [, active] of activeTraces) {
-      const call = active.toolCallStack.find(c => c.id === String(msg.id));
-      if (call) {
-        call.output = msg.result;
-        call.endedAt = Date.now();
-        call.durationMs = call.endedAt - call.startedAt;
+      } else if (updateType === 'tool_call_end' || updateType === 'tool_call_result' || updateType === 'tool_call_complete') {
+        // Tool call completed
+        const callId = String(update.callId ?? update.id ?? '');
+        const call = active.toolCallStack.find(c => c.id === callId);
+        if (call) {
+          call.output = update.result ?? update.output;
+          call.endedAt = Date.now();
+          call.durationMs = call.endedAt - call.startedAt;
+          upsertTrace(active.entry);
+          traceEvents.emit('trace:update', active.entry);
+        }
+      } else if (updateType === 'usage_update' || updateType === 'token_usage') {
+        // Token usage update
+        const usage = (update.usage ?? update.tokens ?? {}) as Record<string, number>;
+        const model = String(update.model ?? update.modelId ?? 'default');
+        active.entry.tokens = {
+          input:     usage.input_tokens     ?? usage.prompt_tokens     ?? active.entry.tokens.input,
+          output:    usage.output_tokens    ?? usage.completion_tokens  ?? active.entry.tokens.output,
+          cached:    usage.cache_read_input_tokens ?? usage.cached_tokens ?? active.entry.tokens.cached,
+          reasoning: usage.reasoning_tokens ?? active.entry.tokens.reasoning,
+          written:   usage.output_tokens    ?? active.entry.tokens.written,
+          total:     (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
+        };
+        const rawCredits = typeof update.ai_credits === 'number' ? update.ai_credits
+          : typeof update.credits === 'number' ? update.credits
+          : null;
+        if (rawCredits !== null) active.entry.aiCredits = rawCredits;
+        else active.entry.aiCredits = calcCredits(active.entry.tokens, model);
         upsertTrace(active.entry);
         traceEvents.emit('trace:update', active.entry);
-        break;
       }
     }
-  }
 
-  // Token usage / completion
-  if (direction === 'in' && msg.method === 'conversation/turn/complete' && msg.params) {
-    const params = msg.params as Record<string, unknown>;
-    const turnId = String(params.turnId ?? msg.id ?? '');
-    const active = activeTraces.get(turnId);
-    if (!active) return;
+    // Response to session/prompt request — completion signal
+    if (msg.id !== undefined && msg.result !== undefined && !msg.method) {
+      const acpSessionId = pendingPrompts.get(msg.id);
+      if (acpSessionId) {
+        const active = activeTraces.get(acpSessionId);
+        if (active) {
+          const result = msg.result as Record<string, unknown>;
+          const stopReason = String(result.stopReason ?? 'end_turn');
 
-    const usage = (params.usage as Record<string, number>) ?? {};
-    const reasoning = (params.reasoning as string) ?? undefined;
-    const response = (params.content as string) ?? undefined;
-    const model = String(params.model ?? params.modelId ?? 'default');
+          active.entry.durationMs = Date.now() - active.startMs;
+          active.entry.status = stopReason === 'end_turn' ? 'done' : 'done';
 
-    // Use credits directly from ACP response if provided (most accurate)
-    // Otherwise calculate from tokens × model rate
-    const rawCredits = typeof params.ai_credits === 'number' ? params.ai_credits
-      : typeof params.credits === 'number' ? params.credits
-      : null;
+          // If no tokens from usage_update, estimate from text length
+          if (active.entry.tokens.total === 0 && active.entry.response) {
+            const roughTokens = Math.ceil(active.entry.response.length / 4);
+            active.entry.tokens.output = roughTokens;
+            active.entry.tokens.written = roughTokens;
+            active.entry.tokens.total = roughTokens;
+            active.entry.aiCredits = calcCredits(active.entry.tokens);
+          }
 
-    active.entry.tokens = {
-      input: usage.input_tokens ?? usage.prompt_tokens ?? 0,
-      output: usage.output_tokens ?? usage.completion_tokens ?? 0,
-      cached: usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0,
-      reasoning: usage.reasoning_tokens ?? 0,
-      written: usage.output_tokens ?? 0,
-      total: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
-    };
-    active.entry.reasoning = reasoning;
-    active.entry.response = response;
-    active.entry.durationMs = Date.now() - active.startMs;
-    active.entry.aiCredits = rawCredits ?? calcCredits(active.entry.tokens, model);
-    active.entry.status = 'done';
+          const counts = countByType(active.entry.toolCalls);
+          active.entry.skillCount = counts.skills;
+          active.entry.agentCount = counts.agents;
+          active.entry.mcpCount = counts.mcps;
 
-    const counts = countByType(active.entry.toolCalls);
-    active.entry.skillCount = counts.skills;
-    active.entry.agentCount = counts.agents;
-    active.entry.mcpCount = counts.mcps;
+          upsertTrace(active.entry);
+          traceEvents.emit('trace:update', active.entry);
+          traceEvents.emit('trace:done', active.entry);
+          pendingPrompts.delete(msg.id);
+          activeTraces.delete(acpSessionId);
+        }
+      }
+    }
 
-    upsertTrace(active.entry);
-    traceEvents.emit('trace:update', active.entry);
-    traceEvents.emit('trace:done', active.entry);
-    activeTraces.delete(turnId);
-  }
-
-  // Error
-  if (direction === 'in' && msg.error) {
-    for (const [id, active] of activeTraces) {
-      if (active.entry.status === 'running') {
-        active.entry.status = 'error';
-        active.entry.error = msg.error.message;
-        active.entry.durationMs = Date.now() - active.startMs;
-        upsertTrace(active.entry);
-        traceEvents.emit('trace:update', active.entry);
-        activeTraces.delete(id);
-        break;
+    // Error response
+    if (msg.error) {
+      // Try to match by pending prompt id
+      if (msg.id !== undefined) {
+        const acpSessionId = pendingPrompts.get(msg.id);
+        if (acpSessionId) {
+          const active = activeTraces.get(acpSessionId);
+          if (active) {
+            active.entry.status = 'error';
+            active.entry.error = msg.error.message;
+            active.entry.durationMs = Date.now() - active.startMs;
+            upsertTrace(active.entry);
+            traceEvents.emit('trace:update', active.entry);
+            pendingPrompts.delete(msg.id);
+            activeTraces.delete(acpSessionId);
+            return;
+          }
+        }
+      }
+      // Fallback: mark any running trace as error
+      for (const [id, active] of activeTraces) {
+        if (active.entry.status === 'running') {
+          active.entry.status = 'error';
+          active.entry.error = msg.error.message;
+          active.entry.durationMs = Date.now() - active.startMs;
+          upsertTrace(active.entry);
+          traceEvents.emit('trace:update', active.entry);
+          activeTraces.delete(id);
+          break;
+        }
       }
     }
   }
