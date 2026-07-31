@@ -169,3 +169,121 @@ function rowToEntry(row: Record<string, unknown>): TraceEntry {
 export function deleteTrace(id: string): void {
   db.prepare('DELETE FROM traces WHERE id = ?').run(id);
 }
+
+export function getAllSessions(): SessionSummary[] {
+  const rows = db.prepare(`
+    SELECT
+      s.id AS sessionId,
+      s.started_at AS startedAt,
+      COUNT(t.id) AS totalEntries,
+      SUM(t.tokens_input) AS input,
+      SUM(t.tokens_output) AS output,
+      SUM(t.tokens_cached) AS cached,
+      SUM(t.tokens_reasoning) AS reasoning,
+      SUM(t.tokens_written) AS written,
+      SUM(t.tokens_total) AS total,
+      SUM(t.ai_credits) AS totalCredits,
+      SUM(t.duration_ms) AS totalDurationMs,
+      SUM(t.skill_count) AS totalSkillCalls,
+      SUM(t.agent_count) AS totalAgentCalls,
+      SUM(t.mcp_count) AS totalMcpCalls
+    FROM sessions s
+    LEFT JOIN traces t ON t.session_id = s.id
+    GROUP BY s.id
+    ORDER BY s.started_at DESC
+  `).all() as Record<string, unknown>[];
+
+  return rows.map(r => ({
+    sessionId: r.sessionId as string,
+    startedAt: r.startedAt as string,
+    totalEntries: (r.totalEntries as number) || 0,
+    totalTokens: {
+      input: (r.input as number) || 0,
+      output: (r.output as number) || 0,
+      cached: (r.cached as number) || 0,
+      reasoning: (r.reasoning as number) || 0,
+      written: (r.written as number) || 0,
+      total: (r.total as number) || 0,
+    },
+    totalCredits: (r.totalCredits as number) || 0,
+    totalDurationMs: (r.totalDurationMs as number) || 0,
+    totalSkillCalls: (r.totalSkillCalls as number) || 0,
+    totalAgentCalls: (r.totalAgentCalls as number) || 0,
+    totalMcpCalls: (r.totalMcpCalls as number) || 0,
+  }));
+}
+
+export interface MetricPoint {
+  dateTime: string;
+  credits: number;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensCached: number;
+  durationMs: number;
+  toolCount: number;
+  status: string;
+}
+
+export interface Metrics {
+  totalTraces: number;
+  totalCredits: number;
+  totalTokens: number;
+  avgDurationMs: number;
+  avgCredits: number;
+  toolTypeCounts: Record<string, number>;
+  recentPoints: MetricPoint[];  // last 50 traces ordered by time
+}
+
+export function getMetrics(): Metrics {
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*) AS totalTraces,
+      SUM(ai_credits) AS totalCredits,
+      SUM(tokens_total) AS totalTokens,
+      AVG(duration_ms) AS avgDurationMs,
+      AVG(ai_credits) AS avgCredits
+    FROM traces
+  `).get() as Record<string, number>;
+
+  const recent = db.prepare(`
+    SELECT date_time, ai_credits, tokens_input, tokens_output, tokens_cached,
+           duration_ms, tool_calls, status
+    FROM traces
+    ORDER BY date_time DESC
+    LIMIT 50
+  `).all() as Record<string, unknown>[];
+
+  const toolTypeCounts: Record<string, number> = {};
+  const points: MetricPoint[] = [];
+
+  for (const r of recent) {
+    let toolCount = 0;
+    try {
+      const calls = JSON.parse(r.tool_calls as string || '[]') as Array<{type: string}>;
+      toolCount = calls.length;
+      for (const c of calls) {
+        toolTypeCounts[c.type] = (toolTypeCounts[c.type] || 0) + 1;
+      }
+    } catch { /* ignore */ }
+    points.push({
+      dateTime: r.date_time as string,
+      credits: (r.ai_credits as number) || 0,
+      tokensInput: (r.tokens_input as number) || 0,
+      tokensOutput: (r.tokens_output as number) || 0,
+      tokensCached: (r.tokens_cached as number) || 0,
+      durationMs: (r.duration_ms as number) || 0,
+      toolCount,
+      status: r.status as string,
+    });
+  }
+
+  return {
+    totalTraces: (totals.totalTraces as number) || 0,
+    totalCredits: (totals.totalCredits as number) || 0,
+    totalTokens: (totals.totalTokens as number) || 0,
+    avgDurationMs: (totals.avgDurationMs as number) || 0,
+    avgCredits: (totals.avgCredits as number) || 0,
+    toolTypeCounts,
+    recentPoints: points.reverse(), // oldest first for charts
+  };
+}
