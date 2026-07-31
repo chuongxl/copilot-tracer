@@ -3,14 +3,26 @@ import { randomUUID } from 'crypto';
 import { upsertTrace } from './db.js';
 export const traceEvents = new EventEmitter();
 const activeTraces = new Map();
-// Cost per 1M tokens (approximate Copilot pricing)
-const CREDIT_PER_1K_INPUT = 0.003;
-const CREDIT_PER_1K_OUTPUT = 0.006;
-const CREDIT_PER_1K_REASONING = 0.009;
-function calcCredits(tokens) {
-    return ((tokens.input / 1000) * CREDIT_PER_1K_INPUT +
-        (tokens.written / 1000) * CREDIT_PER_1K_OUTPUT +
-        (tokens.reasoning / 1000) * CREDIT_PER_1K_REASONING);
+// GitHub AI Credits: 1 credit = $0.01 USD
+// Credits = token_cost_in_dollars / 0.01
+// Rates based on official Copilot model pricing (credits per 1k tokens)
+// See: https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+const CREDITS_PER_1K = {
+    'claude-sonnet-4.6': { input: 0.3, output: 1.5, reasoning: 3.75 }, // $3/$15/$37.5 per 1M
+    'claude-sonnet-4': { input: 0.3, output: 1.5, reasoning: 3.75 },
+    'claude-opus-4': { input: 1.5, output: 7.5, reasoning: 7.5 }, // $15/$75 per 1M
+    'gpt-4.1': { input: 0.2, output: 0.8, reasoning: 0.8 }, // $2/$8 per 1M
+    'gpt-4o': { input: 0.25, output: 1.0, reasoning: 1.0 }, // $2.5/$10 per 1M
+    'gemini-2.0-flash': { input: 0.01, output: 0.04, reasoning: 0.04 }, // $0.1/$0.4 per 1M
+    'gemini-1.5-pro': { input: 0.125, output: 0.5, reasoning: 0.5 }, // $1.25/$5 per 1M
+    'default': { input: 0.3, output: 1.5, reasoning: 3.75 }, // fallback = sonnet-4.6
+};
+function calcCredits(tokens, model = 'default') {
+    const key = Object.keys(CREDITS_PER_1K).find(k => model.toLowerCase().includes(k)) ?? 'default';
+    const rate = CREDITS_PER_1K[key];
+    return ((tokens.input / 1000) * rate.input +
+        (tokens.written / 1000) * rate.output +
+        (tokens.reasoning / 1000) * rate.reasoning);
 }
 function countByType(calls) {
     let skills = 0, agents = 0, mcps = 0;
@@ -102,6 +114,12 @@ export function handleAcpMessage(sessionId, msg, direction) {
         const usage = params.usage ?? {};
         const reasoning = params.reasoning ?? undefined;
         const response = params.content ?? undefined;
+        const model = String(params.model ?? params.modelId ?? 'default');
+        // Use credits directly from ACP response if provided (most accurate)
+        // Otherwise calculate from tokens × model rate
+        const rawCredits = typeof params.ai_credits === 'number' ? params.ai_credits
+            : typeof params.credits === 'number' ? params.credits
+                : null;
         active.entry.tokens = {
             input: usage.input_tokens ?? usage.prompt_tokens ?? 0,
             output: usage.output_tokens ?? usage.completion_tokens ?? 0,
@@ -113,7 +131,7 @@ export function handleAcpMessage(sessionId, msg, direction) {
         active.entry.reasoning = reasoning;
         active.entry.response = response;
         active.entry.durationMs = Date.now() - active.startMs;
-        active.entry.aiCredits = calcCredits(active.entry.tokens);
+        active.entry.aiCredits = rawCredits ?? calcCredits(active.entry.tokens, model);
         active.entry.status = 'done';
         const counts = countByType(active.entry.toolCalls);
         active.entry.skillCount = counts.skills;
