@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getTraces, getTrace, getSessionSummary } from './db.js';
 import { traceEvents } from './proxy.js';
+import { registerOtlpRoutes } from './otlpReceiver.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function startWebServer(port = 4747, sessionId) {
     const app = express();
@@ -12,9 +13,12 @@ export function startWebServer(port = 4747, sessionId) {
     const io = new Server(httpServer, { cors: { origin: '*' } });
     // Serve static web UI
     app.use(express.static(path.join(__dirname, '../web')));
+    // Register OTLP receiver routes
+    app.use(express.json({ limit: '10mb' }));
+    registerOtlpRoutes(app, sessionId ?? 'default');
     // API
     app.get('/api/traces', (req, res) => {
-        const sid = req.query.sessionId || sessionId;
+        const sid = req.query.sessionId || undefined; // undefined = all sessions
         const traces = getTraces(sid, 200);
         res.json(traces);
     });
