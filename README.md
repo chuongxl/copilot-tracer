@@ -31,11 +31,17 @@ Captures every prompt, response, token usage, AI credits, tool calls, skill invo
 ## Install
 
 ```bash
-git clone <repo> /Users/chuongnd/copilot-tracer
-cd /Users/chuongnd/copilot-tracer
-npm install
-npx tsc          # compile TypeScript → dist/
+npm install -g copilot-tracer
 ```
+
+Requires Node.js v18+. The `copilot-tracer` command is available globally after install.
+
+> **Building from source**
+> ```bash
+> git clone https://github.com/chuongnd/copilot-tracer
+> cd copilot-tracer && npm install && npx tsc
+> npm link   # registers global command from local build
+> ```
 
 ---
 
@@ -44,7 +50,7 @@ npx tsc          # compile TypeScript → dist/
 Run the auto-setup command. It detects your Copilot CLI and VS Code installation and injects the required config automatically:
 
 ```bash
-node dist/cli.js --setup
+copilot-tracer --setup
 ```
 
 What it does:
@@ -96,8 +102,7 @@ For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 ## Start Tracer
 
 ```bash
-cd /Users/chuongnd/copilot-tracer
-node dist/cli.js --ui web --port 4747 --no-proxy
+copilot-tracer --ui web --port 4747 --no-proxy
 ```
 
 Open **http://localhost:4747** — shows "waiting for copilot CLI activity".
@@ -163,7 +168,7 @@ Open http://localhost:4747 after starting the tracer.
 ## Console UI
 
 ```bash
-node dist/cli.js --ui console --no-proxy
+copilot-tracer --ui console --no-proxy
 ```
 
 Live updating table in terminal. Same columns as web UI. TOTALS row pinned at top.
@@ -192,15 +197,43 @@ Traces persist to `~/.copilot-tracer/traces.db` (SQLite). Safe to keep across se
 To test the web UI without running a live Copilot session:
 
 ```bash
-node test-seed.mjs   # seeds 4 sample traces
-node dist/cli.js --ui web --no-proxy --session test-session-001
+node test-seed.mjs   # seeds 4 sample traces (source build only)
+copilot-tracer --ui web --no-proxy --session test-session-001
 ```
 
 ---
 
-## Build
+## Build & Publish
 
 ```bash
 npm install
 npx tsc          # compile to dist/
+```
+
+To publish a new release to npm:
+
+```bash
+# Bump patch version (1.0.0 → 1.0.1), build, publish, git-tag
+bash scripts/publish.sh
+
+# Bump minor version
+bash scripts/publish.sh minor
+
+# Publish a beta pre-release
+bash scripts/publish.sh --tag beta --pre beta
+```
+
+The script will:
+1. Check npm authentication (`npm login` required first)
+2. Verify git working tree is clean
+3. Type-check + build
+4. Verify `better-sqlite3` native module loads
+5. Show files that will be published (dry-run preview)
+6. Prompt for confirmation
+7. `npm publish`, commit the version bump, and create a git tag
+
+After publishing:
+
+```bash
+git push && git push origin v<new-version>
 ```

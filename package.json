@@ -2,16 +2,32 @@
   "name": "copilot-tracer",
   "version": "1.0.0",
   "description": "Real-time monitor and tracing tool for GitHub Copilot CLI — tracks tokens, AI credits, MCP/skill/agent calls with console and web UI",
+  "keywords": ["copilot", "github-copilot", "tracing", "observability", "opentelemetry", "tokens", "ai-credits"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chuongnd/copilot-tracer.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist/",
+    "web/",
+    "README.md"
+  ],
   "main": "dist/index.js",
   "bin": {
     "copilot-tracer": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "dev": "tsx src/cli.ts",
     "console": "tsx src/cli.ts --ui console",
     "web": "tsx src/cli.ts --ui web",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "publish:npm": "bash scripts/publish.sh"
   },
   "dependencies": {
     "@opentelemetry/otlp-transformer": "^0.221.0",
