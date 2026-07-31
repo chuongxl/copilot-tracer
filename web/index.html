@@ -4,7 +4,148 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Copilot Tracer</title>
-<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js">
+  // ─── REFINE ENGINE ────────────────────────────────────────────────────────
+  let refineOpen = false;
+
+  function toggleRefine(prompt, inputTokens, outputTokens) {
+    const panel = document.getElementById('refine-panel');
+    if (!panel) return;
+    if (refineOpen) {
+      panel.classList.remove('open');
+      refineOpen = false;
+      return;
+    }
+    refineOpen = true;
+    panel.classList.add('open');
+    panel.innerHTML = '<div style="color:#8b949e;font-size:12px;padding:8px 0">✨ Analysing…</div>';
+    setTimeout(() => {
+      const result = refinePrompt(prompt, inputTokens, outputTokens);
+      panel.innerHTML = renderRefineResult(result);
+    }, 200);
+  }
+
+  function countTokensApprox(text) { return Math.ceil((text || '').length / 4); }
+
+  function refinePrompt(original, inputTokens, outputTokens) {
+    const issues = [];
+    let optimized = original.trim();
+
+    // 1. Remove filler phrases
+    const fillers = [
+      [/pleases*/gi,''], [/could yous*/gi,''], [/can yous*/gi,''],
+      [/I would like you tos*/gi,''], [/I want you tos*/gi,''],
+      [/I need you tos*/gi,''], [/kindlys*/gi,''],
+      [/if you don't minds*/gi,''], [/As an AI[, ]*s*/gi,''],
+    ];
+    let stripped = optimized;
+    for (const [pat, rep] of fillers) stripped = stripped.replace(pat, rep);
+    stripped = stripped.trim();
+    if (stripped !== optimized) {
+      issues.push({ type: 'warn', msg: 'Filler phrases removed (please, can you, I want you to…)' });
+      optimized = stripped;
+    }
+
+    // 2. Vague instructions
+    const vague = [
+      { pat: /do (?:your best|everything you can)/gi, fix: '', tag: 'Vague instruction — be specific about expected outcome' },
+      { pat: /make it (?:good|better|nice|great)/gi, fix: 'improve clarity and correctness', tag: 'Unspecific quality request' },
+      { pat: /help me with/gi, fix: 'explain', tag: 'Indirect phrasing — use imperative' },
+      { pat: /I thinks*/gi, fix: '', tag: 'Hedging reduces LLM precision' },
+      { pat: /maybes*/gi, fix: '', tag: 'Hedging reduces LLM precision' },
+      { pat: /something likes*/gi, fix: '', tag: 'Vague phrasing' },
+    ];
+    for (const { pat, fix, tag } of vague) {
+      if (pat.test(optimized)) {
+        issues.push({ type: 'warn', msg: tag });
+        optimized = optimized.replace(pat, fix).trim();
+      }
+    }
+
+    // 3. Missing output format
+    const hasFormat = /format|json|markdown|list|bullet|table|step.by.step|numbered/i.test(original);
+    if (!hasFormat && original.length > 80) {
+      issues.push({ type: 'info', msg: 'No output format specified — add format constraint for predictable, shorter responses' });
+      optimized += '
+
+Respond in concise bullet points.';
+    }
+
+    // 4. No role anchoring
+    const hasRole = /act as|you are|role|expert|senior/i.test(original);
+    if (!hasRole && original.length > 120) {
+      issues.push({ type: 'info', msg: 'No role context — role anchoring reduces hallucination and improves response focus' });
+      optimized = 'You are a senior software engineer.
+
+' + optimized;
+    }
+
+    // 5. Repeated content
+    const sentences = original.split(/[.!?
+]+/).filter(s => s.trim().length > 10);
+    const unique = new Set(sentences.map(s => s.trim().toLowerCase()));
+    if (unique.size < sentences.length * 0.8 && sentences.length > 3) {
+      issues.push({ type: 'warn', msg: 'Repeated/redundant sentences detected — trim duplicates to reduce input tokens' });
+    }
+
+    // 6. Unstructured long prompt
+    const origTok = countTokensApprox(original);
+    if (origTok > 500 && !(/
+[-*1-9]/.test(original))) {
+      issues.push({ type: 'info', msg: 'Long unstructured prompt — use numbered steps or sections to guide the model' });
+    }
+
+    // 7. Cleanup
+    optimized = optimized.replace(/
+{3,}/g, '
+
+').replace(/  +/g, ' ').trim();
+
+    const newTok = countTokensApprox(optimized);
+    const inputSavingPct = origTok > 0 ? Math.max(0, Math.round((1 - newTok / origTok) * 100)) : 0;
+    const hasOutputFormat = /bullet|concise|brief|short|summary/i.test(optimized);
+    const outputSavingPct = hasOutputFormat ? 25 : 10;
+    const totalSavingPct = Math.round(inputSavingPct * 0.7 + outputSavingPct * 0.3);
+
+    if (issues.length === 0) issues.push({ type: 'info', msg: 'Prompt is already well-structured — no changes needed' });
+
+    return { original, optimized, issues, inputSavingPct, outputSavingPct, totalSavingPct, origTok, newTok };
+  }
+
+  function renderRefineResult(r) {
+    const savingColor = r.totalSavingPct >= 20 ? '#7ee787' : r.totalSavingPct >= 5 ? '#d29922' : '#8b949e';
+    const issueHtml = r.issues.map(i =>
+      '<div class="refine-issue ' + i.type + '">⚠ ' + escHtml(i.msg) + '</div>'
+    ).join('');
+    const unchanged = r.optimized === r.original;
+    return `
+      <div class=refine-section-title>Issues Found</div>
+      <div class=refine-issues>${issueHtml}</div>
+      <div class=refine-section-title>Optimized Prompt</div>
+      <div class=refine-optimized id=refined-text>${unchanged
+        ? '<span style=color:#8b949e>Prompt is already optimal.</span>'
+        : escHtml(r.optimized)
+      }</div>
+      ${!unchanged ? '<button class="refine-copy-btn" onclick="copyRefined()">📋 Copy optimized prompt</button>' : ''}
+      <div class=refine-section-title>Token Saving Estimate</div>
+      <div class=refine-stats>
+        <div class=refine-stat><div class=rv style=color:${savingColor}>${r.totalSavingPct > 0 ? '-'+r.totalSavingPct+'%' : '0%'}</div><div class=rl>Overall Saving</div></div>
+        <div class=refine-stat><div class=rv style=color:#58a6ff>${r.inputSavingPct > 0 ? '-'+r.inputSavingPct+'%' : '0%'}</div><div class=rl>Input Tokens</div></div>
+        <div class=refine-stat><div class=rv style=color:#d2a8ff>${r.outputSavingPct > 0 ? '-'+r.outputSavingPct+'%' : '0%'}</div><div class=rl>Output Tokens</div></div>
+        <div class=refine-stat><div class=rv style=color:#8b949e>${r.origTok} → ${r.newTok}</div><div class=rl>Approx Tokens</div></div>
+      </div>
+    `;
+  }
+
+  function copyRefined() {
+    const el = document.getElementById('refined-text');
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText).then(() => {
+      const btn = document.querySelector('.refine-copy-btn');
+      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => btn.textContent = '📋 Copy optimized prompt', 1500); }
+    });
+  }
+</script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, monospace; font-size: 13px; }
@@ -83,7 +224,24 @@
   .call-io .label { color: #58a6ff; margin-right: 4px; }
   .call-io.error { color: #f85149; }
 
-  /* Token detail modal */
+  /* Refine panel */
+  .refine-btn { background: #1f2d1f; border: 1px solid #238636; color: #7ee787; border-radius: 6px; padding: 5px 12px; font-size: 11px; cursor: pointer; margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; transition: all .15s; }
+  .refine-btn:hover { background: #238636; color: #fff; }
+  .refine-panel { margin-top: 12px; background: #0d1117; border: 1px solid #238636; border-radius: 8px; padding: 14px; display: none; }
+  .refine-panel.open { display: block; }
+  .refine-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #8b949e; margin-bottom: 6px; margin-top: 12px; }
+  .refine-section-title:first-child { margin-top: 0; }
+  .refine-issues { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .refine-issue { font-size: 11px; padding: 4px 8px; border-radius: 4px; background: #21262d; border-left: 3px solid; }
+  .refine-issue.warn  { border-color: #d29922; color: #d29922; }
+  .refine-issue.info  { border-color: #58a6ff; color: #8b949e; }
+  .refine-optimized { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #7ee787; max-height: 260px; overflow: auto; }
+  .refine-stats { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+  .refine-stat { background: #21262d; border-radius: 6px; padding: 6px 12px; text-align: center; }
+  .refine-stat .rv { font-size: 18px; font-weight: 700; }
+  .refine-stat .rl { font-size: 10px; color: #8b949e; margin-top: 1px; }
+  .refine-copy-btn { margin-top: 10px; background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px; padding: 4px 12px; font-size: 11px; cursor: pointer; }
+  .refine-copy-btn:hover { color: #e6edf3; border-color: #58a6ff; }
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
   .modal-overlay.open { display: flex; }
   .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; width: 560px; max-height: 80vh; overflow: auto; }
@@ -271,6 +429,8 @@
       <div class="detail-section">
         <h4>Prompt</h4>
         <div class="detail-box prompt">${escHtml(t.prompt||'')}</div>
+        <button class="refine-btn" onclick="toggleRefine(${JSON.stringify(t.prompt||'').replace(/</g,'\\u003c')}, ${t.tokens?.input||0}, ${t.tokens?.output||0})">✨ Refine Prompt</button>
+        <div class="refine-panel" id="refine-panel"></div>
       </div>
       ${t.reasoning ? `
       <div class="detail-section">
