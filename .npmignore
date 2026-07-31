@@ -1,0 +1,8 @@
+src/
+scripts/
+tsconfig.json
+test-seed.mjs
+*.md
+!README.md
+.git/
+node_modules/
