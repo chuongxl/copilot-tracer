@@ -8,6 +8,7 @@ import { createSession, getTraces, getSessionSummary } from './db.js';
 import { handleAcpMessage, traceEvents } from './proxy.js';
 import { renderConsoleTable } from './consoleUi.js';
 import { startWebServer } from './webServer.js';
+import { runSetup } from './setup.js';
 import open from 'open';
 
 program
@@ -19,11 +20,18 @@ program
   .option('--no-proxy', 'Run UI only (no ACP proxy, read from DB)')
   .option('--session <id>', 'Filter by session ID')
   .option('--debug', 'Dump ALL raw ACP messages to stderr (use to discover real method names)')
+  .option('--setup', 'Auto-detect copilot CLI + VS Code and configure OTLP env vars')
   .allowUnknownOption()
   .parse();
 
 const opts = program.opts();
 const port = parseInt(opts.port);
+
+// Handle --setup before anything else
+if (opts.setup) {
+  runSetup(port);
+  process.exit(0);
+}
 const sessionId = opts.session || randomUUID();
 
 createSession(sessionId);
