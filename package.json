@@ -1,6 +1,6 @@
 {
   "name": "copilot-tracer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Real-time monitor and tracing tool for GitHub Copilot CLI — tracks tokens, AI credits, MCP/skill/agent calls with console and web UI",
   "keywords": [
     "copilot",
