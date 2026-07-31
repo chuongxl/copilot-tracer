@@ -78,7 +78,11 @@ function detectShellProfile() {
     return path.join(os.homedir(), '.zshrc');
 }
 function getVSCodeSettingsPath() {
-    return path.join(os.homedir(), 'Library/Application Support/Code/User/settings.json');
+    if (process.platform === 'darwin') {
+        return path.join(os.homedir(), 'Library/Application Support/Code/User/settings.json');
+    }
+    // Linux (and WSL)
+    return path.join(os.homedir(), '.config/Code/User/settings.json');
 }
 // ── Patchers ──────────────────────────────────────────────────────────────────
 function patchShellProfile(profilePath, port) {
@@ -202,15 +206,19 @@ export function runSetup(port) {
             console.log(`\n${WARN} VS Code settings: ${result.reason}`);
         }
     }
-    // 5. Summary
+    // 5. Apply env vars to the current process so the OTLP receiver works immediately
+    process.env[OTEL_ENDPOINT_KEY] = `http://localhost:${port}`;
+    process.env[OTEL_CONTENT_KEY] = 'true';
+    process.env[OTEL_ENABLED_KEY] = 'true';
+    // 6. Summary
+    const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
     console.log('\n────────────────────────────────────────────────');
-    console.log('  Next steps:\n');
-    console.log(`  1. source ${profilePath ?? '~/.zshrc'}   (apply to current terminal)`);
+    console.log('  One manual step required:\n');
+    console.log(`  source ~/${profileBase}`);
+    console.log(`  (opens a new terminal already? — env is already active there)`);
     if (vscode.found)
-        console.log('  2. Restart VS Code');
-    console.log(`  3. node dist/cli.js --ui web --port ${port} --no-proxy`);
-    console.log(`  4. Open http://localhost:${port}`);
-    console.log(`  5. Use copilot normally — traces appear automatically`);
-    console.log('\n  Tracer endpoint: http://localhost:' + port + '/v1/traces');
+        console.log('\n  Restart VS Code once to pick up the new terminal env.');
+    console.log('\n  ✨ Starting tracer web UI now...');
+    console.log(`  Open: http://localhost:${port}/`);
     console.log('────────────────────────────────────────────────\n');
 }

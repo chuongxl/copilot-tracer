@@ -51,7 +51,16 @@ export function startWebServer(port = 4747, sessionId) {
             traceEvents.off('trace:done', onDone);
         });
     });
+    httpServer.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`\n  ❌ Port ${port} is already in use.`);
+            console.error(`     A tracer may already be running — open http://localhost:${port}/`);
+            console.error(`     Or kill it: lsof -ti:${port} | xargs kill\n`);
+            process.exit(1);
+        }
+        throw err;
+    });
     httpServer.listen(port, () => {
-        console.log(`\n  🌐 Copilot Tracer Web UI: http://localhost:${port}\n`);
+        console.log(`\n  🌐 Copilot Tracer Web UI: http://localhost:${port}/\n`);
     });
 }

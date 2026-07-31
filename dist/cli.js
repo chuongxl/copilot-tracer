@@ -24,10 +24,12 @@ program
     .parse();
 const opts = program.opts();
 const port = parseInt(opts.port);
-// Handle --setup before anything else
+// Handle --setup: patch env files, apply to current process, then fall through to start web UI
 if (opts.setup) {
     runSetup(port);
-    process.exit(0);
+    // Force no-proxy web mode — user just needs to open the browser
+    opts.proxy = false;
+    opts.ui = 'web';
 }
 const sessionId = opts.session || randomUUID();
 createSession(sessionId);
@@ -35,7 +37,7 @@ console.log(`\n  🤖 Copilot Tracer  |  Session: ${sessionId}\n`);
 // Start Web UI
 if (opts.ui === 'web' || opts.ui === 'both') {
     startWebServer(port, sessionId);
-    setTimeout(() => open(`http://localhost:${port}`), 1500);
+    setTimeout(() => open(`http://localhost:${port}/`), 1500);
 }
 // Start Console UI refresh loop
 if (opts.ui === 'console' || opts.ui === 'both') {
