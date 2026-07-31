@@ -16,6 +16,7 @@ program
     .option('--cmd <command>', 'Copilot CLI command to wrap', 'copilot')
     .option('--no-proxy', 'Run UI only (no ACP proxy, read from DB)')
     .option('--session <id>', 'Filter by session ID')
+    .option('--debug', 'Dump ALL raw ACP messages to stderr (use to discover real method names)')
     .allowUnknownOption()
     .parse();
 const opts = program.opts();
@@ -53,22 +54,42 @@ if (opts.proxy !== false) {
     // Parse newline-delimited JSON (NDJSON) from copilot
     const stdinRl = readline.createInterface({ input: process.stdin });
     const stdoutRl = readline.createInterface({ input: child.stdout });
+    const debug = opts.debug === true;
+    const logFile = debug ? require('fs').createWriteStream(`/tmp/copilot-tracer-${sessionId.slice(0, 8)}.ndjson`, { flags: 'a' }) : null;
+    function debugLog(direction, raw, parsed) {
+        if (!debug)
+            return;
+        const entry = JSON.stringify({ ts: new Date().toISOString(), dir: direction, raw, parsed });
+        process.stderr.write('[TRACER] ' + entry + '\n');
+        logFile?.write(entry + '\n');
+    }
     // stdin → copilot (user → model)
     stdinRl.on('line', (line) => {
+        let parsed;
         try {
-            const msg = JSON.parse(line);
-            handleAcpMessage(sessionId, msg, 'in');
+            parsed = JSON.parse(line);
+            handleAcpMessage(sessionId, parsed, 'in');
         }
-        catch { }
+        catch (e) {
+            // Not JSON — plain text from terminal, not ACP
+            if (debug)
+                process.stderr.write(`[TRACER] stdin non-JSON: ${line}\n`);
+        }
+        debugLog('→ IN', line, parsed);
         child.stdin.write(line + '\n');
     });
     // copilot → stdout (model → user)
     stdoutRl.on('line', (line) => {
+        let parsed;
         try {
-            const msg = JSON.parse(line);
-            handleAcpMessage(sessionId, msg, 'out');
+            parsed = JSON.parse(line);
+            handleAcpMessage(sessionId, parsed, 'out');
         }
-        catch { }
+        catch (e) {
+            if (debug)
+                process.stderr.write(`[TRACER] stdout non-JSON: ${line}\n`);
+        }
+        debugLog('← OUT', line, parsed);
         process.stdout.write(line + '\n');
     });
     child.on('exit', (code) => {
