@@ -1,20 +1,18 @@
 /**
- * OTLP HTTP receiver — accepts traces and metrics pushed by GitHub Copilot CLI
- * via OpenTelemetry export (OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747).
+ * OTLP HTTP receiver — accepts traces pushed by GitHub Copilot CLI
  *
- * Copilot uses OTel GenAI semantic conventions:
- *   - span "invoke_agent"    — top-level agent invocation
- *   - span "chat <model>"    — individual LLM call
- *   - span "execute_tool"    — tool call
- *
- * Relevant attributes:
- *   gen_ai.prompt / gen_ai.completion  (when OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true)
- *   gen_ai.usage.input_tokens
- *   gen_ai.usage.output_tokens
- *   gen_ai.usage.cache_read_input_tokens
- *   gen_ai.request.model
- *   gen_ai.system
- *   github.copilot.ai_credits
+ * REAL attribute names (verified from live traffic Jul 31 2026):
+ *   invoke_agent span attrs:
+ *     gen_ai.input.messages          — user prompt (JSON string)
+ *     gen_ai.output.messages         — assistant response (JSON string)
+ *     gen_ai.usage.input_tokens
+ *     gen_ai.usage.output_tokens
+ *     gen_ai.usage.cache_read.input_tokens   (NOT cache_read_input_tokens)
+ *     github.copilot.cost            — AI credits (NOT github.copilot.ai_credits)
+ *     gen_ai.request.model
+ *     github.copilot.context.skills
+ *   chat <model> span attrs: same as above
+ *   User message event: github.copilot.user.message
  */
 import { upsertTrace, createSession } from './db.js';
 import { traceEvents } from './proxy.js';
@@ -50,6 +48,10 @@ function ensureSession(sessionId) {
 // ── Process one batch of spans ────────────────────────────────────────────────
 function processSpans(spans, sessionId) {
     for (const span of spans) {
+        // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
+        if (process.env.COPILOT_TRACER_DEBUG === '1') {
+            process.stderr.write('[SPAN] ' + JSON.stringify({ name: span.name, attrs: span.attributes?.map(a => a.key), events: span.events?.map(e => ({ name: e.name, attrKeys: e.attributes?.map(a => a.key) })) }) + '\n');
+        }
         const attrs = span.attributes ?? [];
         const spanName = span.name;
         const traceId = span.traceId;
@@ -59,7 +61,7 @@ function processSpans(spans, sessionId) {
             const startMs = nanoToMs(span.startTimeUnixNano);
             const endMs = nanoToMs(span.endTimeUnixNano);
             const durationMs = endMs - startMs;
-            // Extract prompt from events (gen_ai.content.prompt event)
+            // Extract prompt from gen_ai.input.messages (real attr name from copilot)
             let promptText = '';
             let responseText = '';
             for (const ev of span.events ?? []) {
@@ -73,17 +75,94 @@ function processSpans(spans, sessionId) {
                     if (msg)
                         responseText = String(msg);
                 }
+                // Real copilot event for user message
+                if (ev.name === 'github.copilot.user.message') {
+                    const msg = getAttr(ev.attributes, 'github.copilot.user.message.text')
+                        ?? getAttr(ev.attributes, 'gen_ai.prompt');
+                    if (msg)
+                        promptText = String(msg);
+                }
             }
-            // Fallback: check attributes directly
+            // Real attribute names from live copilot traffic
             if (!promptText) {
-                const p = getAttr(attrs, 'gen_ai.prompt') ?? getAttr(attrs, 'github.copilot.prompt');
-                if (p)
-                    promptText = String(p);
+                const raw = getAttr(attrs, 'gen_ai.input.messages');
+                if (raw) {
+                    try {
+                        const msgs = JSON.parse(String(raw));
+                        // Copilot format: [{role, parts:[{type, content}]}]
+                        const userMsg = Array.isArray(msgs)
+                            ? msgs.find((m) => m.role === 'user')
+                            : null;
+                        if (userMsg?.parts) {
+                            promptText = userMsg.parts
+                                .filter((p) => p.type === 'text')
+                                .map((p) => {
+                                // Strip system injections like <current_datetime>...</current_datetime>\n\n
+                                let text = p.content ?? '';
+                                text = text.replace(/<current_datetime>[\s\S]*?<\/current_datetime>\s*/g, '');
+                                text = text.replace(/<system_reminder>[\s\S]*?<\/system_reminder>\s*/g, '');
+                                return text.trim();
+                            })
+                                .join(' ')
+                                .trim()
+                                .slice(0, 300);
+                        }
+                        else {
+                            promptText = (userMsg?.content ?? String(raw)).slice(0, 300);
+                        }
+                    }
+                    catch {
+                        promptText = String(raw).slice(0, 300);
+                    }
+                }
             }
-            const credits = getAttr(attrs, 'github.copilot.ai_credits');
+            if (!responseText) {
+                const raw = getAttr(attrs, 'gen_ai.output.messages');
+                if (raw) {
+                    try {
+                        const msgs = JSON.parse(String(raw));
+                        const assistantMsg = Array.isArray(msgs)
+                            ? msgs.find((m) => m.role === 'assistant')
+                            : null;
+                        if (assistantMsg?.parts) {
+                            responseText = assistantMsg.parts
+                                .filter((p) => p.type === 'text')
+                                .map((p) => p.content ?? '')
+                                .join(' ')
+                                .slice(0, 1000);
+                        }
+                        else {
+                            responseText = (assistantMsg?.content ?? String(raw)).slice(0, 1000);
+                        }
+                    }
+                    catch {
+                        responseText = String(raw).slice(0, 1000);
+                    }
+                }
+            }
+            // Real credit attrs (verified Jul 31 2026):
+            //   github.copilot.nano_aiu  — divide by 1e9 to get credits (matches copilot terminal output)
+            //   github.copilot.cost      — raw cost value (different unit, do NOT use directly)
+            const rawCost = getAttr(attrs, 'github.copilot.cost');
+            const rawNanoAiu = getAttr(attrs, 'github.copilot.nano_aiu');
+            if (process.env.COPILOT_TRACER_DEBUG === '1') {
+                process.stderr.write(`[CREDITS] cost=${rawCost} nano_aiu=${rawNanoAiu}\n`);
+            }
+            // nano_aiu / 1e9 = credits (e.g. 2289375000 / 1e9 = 2.29 credits)
+            const credits = rawNanoAiu !== undefined
+                ? Number(rawNanoAiu) / 1e9
+                : rawCost !== undefined
+                    ? Number(rawCost)
+                    : 0;
             const inputTokens = Number(getAttr(attrs, 'gen_ai.usage.input_tokens') ?? 0);
             const outputTokens = Number(getAttr(attrs, 'gen_ai.usage.output_tokens') ?? 0);
-            const cachedTokens = Number(getAttr(attrs, 'gen_ai.usage.cache_read_input_tokens') ?? 0);
+            // Real cached token attr: gen_ai.usage.cache_read.input_tokens (with dot, not underscore)
+            const cachedTokens = Number(getAttr(attrs, 'gen_ai.usage.cache_read.input_tokens')
+                ?? getAttr(attrs, 'gen_ai.usage.cache_read_input_tokens')
+                ?? 0);
+            // Skills from context
+            const skillsRaw = getAttr(attrs, 'github.copilot.context.skills');
+            const skillCount = skillsRaw ? String(skillsRaw).split(',').filter(Boolean).length : 0;
             const isError = (span.status?.code ?? 0) === 2; // OTEL status ERROR = 2
             const entry = {
                 id: spanId,
@@ -99,10 +178,10 @@ function processSpans(spans, sessionId) {
                     written: outputTokens,
                     total: inputTokens + outputTokens,
                 },
-                aiCredits: credits ? Number(credits) : 0,
+                aiCredits: credits,
                 durationMs,
                 toolCalls: [],
-                skillCount: 0,
+                skillCount,
                 agentCount: 0,
                 mcpCount: 0,
                 status: isError ? 'error' : 'done',
