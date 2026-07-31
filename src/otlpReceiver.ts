@@ -153,13 +153,12 @@ function processSpans(spans: OtlpSpan[], sessionId: string) {
                   return text.trim();
                 })
                 .join(' ')
-                .trim()
-                .slice(0, 300);
+                .trim();
             } else {
-              promptText = (userMsg?.content ?? String(raw)).slice(0, 300);
+              promptText = (userMsg?.content ?? String(raw)).trim();
             }
           } catch {
-            promptText = String(raw).slice(0, 300);
+            promptText = String(raw).trim();
           }
         }
       }
