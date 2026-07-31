@@ -165,3 +165,7 @@ function rowToEntry(row: Record<string, unknown>): TraceEntry {
     error: row.error as string | undefined,
   };
 }
+
+export function deleteTrace(id: string): void {
+  db.prepare('DELETE FROM traces WHERE id = ?').run(id);
+}

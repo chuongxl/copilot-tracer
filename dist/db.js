@@ -153,3 +153,6 @@ function rowToEntry(row) {
         error: row.error,
     };
 }
+export function deleteTrace(id) {
+    db.prepare('DELETE FROM traces WHERE id = ?').run(id);
+}

@@ -18,7 +18,7 @@
 import type { Express } from 'express';
 import { randomUUID } from 'crypto';
 import type { TraceEntry, ToolCall } from './types.js';
-import { upsertTrace, createSession } from './db.js';
+import { upsertTrace, createSession, getTraces, deleteTrace } from './db.js';
 import { traceEvents } from './proxy.js';
 
 // ── Types for OTLP JSON format ────────────────────────────────────────────────
@@ -91,6 +91,9 @@ function ensureSession(sessionId: string) {
 }
 
 // ── Process one batch of spans ────────────────────────────────────────────────
+// Track standalone chat entries so invoke_agent can replace them
+const pendingChatIds = new Map<string, string>(); // `chat:${traceId}` → entryId
+
 function processSpans(spans: OtlpSpan[], sessionId: string) {
   for (const span of spans) {
     // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
@@ -238,6 +241,14 @@ function processSpans(spans: OtlpSpan[], sessionId: string) {
       upsertTrace(entry);
       traceEvents.emit('trace:update', entry);
       traceEvents.emit('trace:done', entry);
+
+      // Clean up any standalone chat entry for the same traceId (chat span arrived before invoke_agent)
+      const chatKey = `chat:${traceId}`;
+      const staleId = pendingChatIds.get(chatKey);
+      if (staleId && staleId !== entry.id) {
+        deleteTrace(staleId);
+        pendingChatIds.delete(chatKey);
+      }
       continue;
     }
 
@@ -290,6 +301,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string) {
         };
         ensureSession(sessionId);
         upsertTrace(entry);
+        pendingChatIds.set(`chat:${traceId}`, entry.id);
         traceEvents.emit('trace:update', entry);
         traceEvents.emit('trace:done', entry);
       }

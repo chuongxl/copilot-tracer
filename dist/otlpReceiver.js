@@ -14,7 +14,7 @@
  *   chat <model> span attrs: same as above
  *   User message event: github.copilot.user.message
  */
-import { upsertTrace, createSession } from './db.js';
+import { upsertTrace, createSession, deleteTrace } from './db.js';
 import { traceEvents } from './proxy.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs, key) {
@@ -46,6 +46,8 @@ function ensureSession(sessionId) {
     }
 }
 // ── Process one batch of spans ────────────────────────────────────────────────
+// Track standalone chat entries so invoke_agent can replace them
+const pendingChatIds = new Map(); // `chat:${traceId}` → entryId
 function processSpans(spans, sessionId) {
     for (const span of spans) {
         // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
@@ -192,6 +194,13 @@ function processSpans(spans, sessionId) {
             upsertTrace(entry);
             traceEvents.emit('trace:update', entry);
             traceEvents.emit('trace:done', entry);
+            // Clean up any standalone chat entry for the same traceId (chat span arrived before invoke_agent)
+            const chatKey = `chat:${traceId}`;
+            const staleId = pendingChatIds.get(chatKey);
+            if (staleId && staleId !== entry.id) {
+                deleteTrace(staleId);
+                pendingChatIds.delete(chatKey);
+            }
             continue;
         }
         // ── chat span = LLM call — extract token usage + prompt/response ──────
@@ -245,6 +254,7 @@ function processSpans(spans, sessionId) {
                 };
                 ensureSession(sessionId);
                 upsertTrace(entry);
+                pendingChatIds.set(`chat:${traceId}`, entry.id);
                 traceEvents.emit('trace:update', entry);
                 traceEvents.emit('trace:done', entry);
             }
