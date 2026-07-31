@@ -46,8 +46,10 @@ function ensureSession(sessionId) {
     }
 }
 // ── Process one batch of spans ────────────────────────────────────────────────
-// Track standalone chat entries so invoke_agent can replace them
-const pendingChatIds = new Map(); // `chat:${traceId}` → entryId
+// Track standalone chat entries so invoke_agent can replace them (multiple chat spans per traceId)
+const pendingChatIds = new Map(); // `chat:${traceId}` → list of entryIds
+// Buffer tool calls that arrive before invoke_agent
+const pendingToolCalls = new Map(); // traceId → tool calls
 function processSpans(spans, sessionId) {
     for (const span of spans) {
         // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
@@ -190,17 +192,40 @@ function processSpans(spans, sessionId) {
                 error: isError ? (span.status?.message ?? 'error') : undefined,
             };
             inFlight.set(traceId, { entry, toolCalls: new Map(), agentSpanId: spanId });
+            // Flush any tool calls that arrived before invoke_agent
+            const buffered = pendingToolCalls.get(traceId) ?? [];
+            if (buffered.length > 0) {
+                const inf = inFlight.get(traceId);
+                for (const tc of buffered) {
+                    inf.entry.toolCalls.push(tc);
+                    inf.toolCalls.set(tc.id, tc);
+                }
+                let skills = 0, agents = 0, mcps = 0;
+                for (const c of inf.entry.toolCalls) {
+                    if (c.type === 'skill')
+                        skills++;
+                    else if (c.type === 'agent')
+                        agents++;
+                    else if (c.type === 'mcp')
+                        mcps++;
+                }
+                inf.entry.skillCount = skills;
+                inf.entry.agentCount = agents;
+                inf.entry.mcpCount = mcps;
+                pendingToolCalls.delete(traceId);
+            }
             ensureSession(sessionId);
             upsertTrace(entry);
             traceEvents.emit('trace:update', entry);
             traceEvents.emit('trace:done', entry);
-            // Clean up any standalone chat entry for the same traceId (chat span arrived before invoke_agent)
+            // Clean up ALL standalone chat entries for this traceId (invoke_agent replaces them all)
             const chatKey = `chat:${traceId}`;
-            const staleId = pendingChatIds.get(chatKey);
-            if (staleId && staleId !== entry.id) {
-                deleteTrace(staleId);
-                pendingChatIds.delete(chatKey);
+            const staleIds = pendingChatIds.get(chatKey) ?? [];
+            for (const staleId of staleIds) {
+                if (staleId !== entry.id)
+                    deleteTrace(staleId);
             }
+            pendingChatIds.delete(chatKey);
             continue;
         }
         // ── chat span = LLM call — extract token usage + prompt/response ──────
@@ -254,7 +279,10 @@ function processSpans(spans, sessionId) {
                 };
                 ensureSession(sessionId);
                 upsertTrace(entry);
-                pendingChatIds.set(`chat:${traceId}`, entry.id);
+                const chatKey = `chat:${traceId}`;
+                const existing = pendingChatIds.get(chatKey) ?? [];
+                existing.push(entry.id);
+                pendingChatIds.set(chatKey, existing);
                 traceEvents.emit('trace:update', entry);
                 traceEvents.emit('trace:done', entry);
             }
@@ -276,13 +304,39 @@ function processSpans(spans, sessionId) {
                 durationMs,
                 error: isError ? (span.status?.message ?? 'error') : undefined,
             };
-            // Extract tool input/output from events
+            // Extract tool input from span attrs (real copilot attr names from debug)
+            // gen_ai.tool.call.arguments — JSON string of args
+            // github.copilot.tool.parameters.* — individual params (e.g. github.copilot.tool.parameters.command)
+            // gen_ai.tool.call.result — tool output
+            const argsRaw = getAttr(attrs, 'gen_ai.tool.call.arguments');
+            const resultRaw = getAttr(attrs, 'gen_ai.tool.call.result');
+            if (argsRaw) {
+                try {
+                    call.input = JSON.parse(String(argsRaw));
+                }
+                catch {
+                    call.input = { args: String(argsRaw) };
+                }
+            }
+            // Supplement with individual tool params (e.g. command for bash)
+            const toolParams = {};
+            for (const attr of attrs) {
+                if (attr.key?.startsWith('github.copilot.tool.parameters.')) {
+                    const paramName = attr.key.replace('github.copilot.tool.parameters.', '');
+                    toolParams[paramName] = attr.value?.stringValue ?? attr.value?.intValue ?? attr.value?.boolValue;
+                }
+            }
+            if (Object.keys(toolParams).length > 0)
+                call.input = { ...call.input, ...toolParams };
+            if (resultRaw)
+                call.output = String(resultRaw).slice(0, 500);
+            // Also check events as fallback
             for (const ev of span.events ?? []) {
-                if (ev.name === 'gen_ai.content.prompt') {
+                if (ev.name === 'gen_ai.content.prompt' && !argsRaw) {
                     call.input = { args: getAttr(ev.attributes, 'gen_ai.prompt') };
                 }
-                if (ev.name === 'gen_ai.content.completion') {
-                    call.output = getAttr(ev.attributes, 'gen_ai.completion');
+                if (ev.name === 'gen_ai.content.completion' && !resultRaw) {
+                    call.output = String(getAttr(ev.attributes, 'gen_ai.completion') ?? '').slice(0, 500);
                 }
             }
             const inf = inFlight.get(traceId);
@@ -305,17 +359,28 @@ function processSpans(spans, sessionId) {
                 upsertTrace(inf.entry);
                 traceEvents.emit('trace:update', inf.entry);
             }
+            else {
+                // Buffer tool call — invoke_agent hasn't arrived yet
+                const buf = pendingToolCalls.get(traceId) ?? [];
+                buf.push(call);
+                pendingToolCalls.set(traceId, buf);
+            }
             continue;
         }
     }
 }
 function detectToolType(name) {
-    if (name.startsWith('mcp_') || name.includes('/'))
+    const n = name.toLowerCase();
+    // MCP — either mcp_ prefix, slash-separated server/tool, or gh CLI (copilot uses gh over MCP)
+    if (n.startsWith('mcp_') || n.includes('/') || n === 'gh' || n.startsWith('gh_'))
         return 'mcp';
-    if (name.includes('skill') || name.includes('hermes'))
-        return 'skill';
-    if (name.includes('agent') || name.includes('delegate'))
+    // Agent — sub-agent delegation
+    if (n.includes('agent') || n.includes('delegate') || n.includes('spawn'))
         return 'agent';
+    // Skill — named capability loaded from skills context
+    if (n.includes('skill') || n.includes('hermes') || n === 'copilot-tracer')
+        return 'skill';
+    // Builtin — shell, file, search, etc
     return 'builtin';
 }
 // ── Register OTLP HTTP routes on the Express app ──────────────────────────────
