@@ -31,88 +31,93 @@
     const issues = [];
     let optimized = original.trim();
 
-    // 1. Remove filler phrases
+    // ── 1. Strip filler phrases ──────────────────────────────────────────────
     const fillers = [
-      [/pleases*/gi,''], [/could yous*/gi,''], [/can yous*/gi,''],
-      [/I would like you tos*/gi,''], [/I want you tos*/gi,''],
-      [/I need you tos*/gi,''], [/kindlys*/gi,''],
-      [/if you don't minds*/gi,''], [/As an AI[, ]*s*/gi,''],
+      /\bplease\b\s*/gi, /\bcould you\b\s*/gi, /\bcan you\b\s*/gi,
+      /\bI would like you to\b\s*/gi, /\bI want you to\b\s*/gi,
+      /\bI need you to\b\s*/gi, /\bkindly\b\s*/gi,
+      /\bif you don't mind\b[,]?\s*/gi, /\bAs an AI[,]?\s*/gi,
+      /\bthank you[^.!?\n]*/gi,
     ];
     let stripped = optimized;
-    for (const [pat, rep] of fillers) stripped = stripped.replace(pat, rep);
+    for (const pat of fillers) stripped = stripped.replace(pat, '');
     stripped = stripped.trim();
     if (stripped !== optimized) {
-      issues.push({ type: 'warn', msg: 'Filler phrases removed (please, can you, I want you to…)' });
+      issues.push({ type: 'warn', msg: 'Filler phrases removed (please / can you / thank you / if you don't mind…)' });
       optimized = stripped;
     }
 
-    // 2. Vague instructions
-    const vague = [
-      { pat: /do (?:your best|everything you can)/gi, fix: '', tag: 'Vague instruction — be specific about expected outcome' },
-      { pat: /make it (?:good|better|nice|great)/gi, fix: 'improve clarity and correctness', tag: 'Unspecific quality request' },
-      { pat: /help me with/gi, fix: 'explain', tag: 'Indirect phrasing — use imperative' },
-      { pat: /I thinks*/gi, fix: '', tag: 'Hedging reduces LLM precision' },
-      { pat: /maybes*/gi, fix: '', tag: 'Hedging reduces LLM precision' },
-      { pat: /something likes*/gi, fix: '', tag: 'Vague phrasing' },
-    ];
-    for (const { pat, fix, tag } of vague) {
+    // ── 2. Fix vague quality requests before other replacements ─────────────
+    if (/\bmake it (?:good|better|nice|great)(?:\s+and\s+\w+)*\b/gi.test(optimized)) {
+      issues.push({ type: 'warn', msg: 'Unspecific quality request (make it good/nice) — specify the exact quality criteria' });
+      optimized = optimized.replace(/\bmake it (?:good|better|nice|great)(?:\s+and\s+\w+)*\b/gi, '');
+    }
+
+    // ── 3. Fix indirect phrasing ─────────────────────────────────────────────
+    if (/\bhelp me with(?: something)?\b/gi.test(optimized)) {
+      issues.push({ type: 'warn', msg: 'Indirect phrasing (help me with) — use imperative: Explain / List / Show' });
+      optimized = optimized.replace(/\bhelp me with(?: something)?\b/gi, 'explain');
+    }
+
+    // ── 4. Remove hedging ────────────────────────────────────────────────────
+    const hedges = [[/\bI think\b\s*/gi, 'Hedging (I think)'], [/\bmaybe\b\s*/gi, 'Hedging (maybe)'], [/\bsomething like\b\s*/gi, 'Vague phrasing (something like)']];
+    for (const [pat, tag] of hedges) {
       if (pat.test(optimized)) {
-        issues.push({ type: 'warn', msg: tag });
-        optimized = optimized.replace(pat, fix).trim();
+        issues.push({ type: 'warn', msg: tag + ' reduces LLM precision — remove' });
+        optimized = optimized.replace(pat, '');
       }
     }
 
-    // 3. Missing output format
-    const hasFormat = /format|json|markdown|list|bullet|table|step.by.step|numbered/i.test(original);
+    // ── 5. Detect missing output format ─────────────────────────────────────
+    const hasFormat = /\bformat\b|\bjson\b|\bmarkdown\b|\blist\b|\bbullet\b|\btable\b|\bstep.by.step\b|\bnumbered\b/i.test(original);
     if (!hasFormat && original.length > 80) {
-      issues.push({ type: 'info', msg: 'No output format specified — add format constraint for predictable, shorter responses' });
-      optimized += '
-
-Respond in concise bullet points.';
+      issues.push({ type: 'info', msg: 'No output format specified — adding concise bullet format saves output tokens' });
+      optimized += '\n\nRespond in concise bullet points.';
     }
 
-    // 4. No role anchoring
-    const hasRole = /act as|you are|role|expert|senior/i.test(original);
+    // ── 6. Detect missing role context ───────────────────────────────────────
+    const hasRole = /\bact as\b|\byou are\b|\brole\b|\bexpert\b|\bsenior\b/i.test(original);
     if (!hasRole && original.length > 120) {
-      issues.push({ type: 'info', msg: 'No role context — role anchoring reduces hallucination and improves response focus' });
-      optimized = 'You are a senior software engineer.
-
-' + optimized;
+      issues.push({ type: 'info', msg: 'No role context — role grounding improves quality and reduces hallucination' });
+      optimized = 'You are a senior software engineer.\n\n' + optimized;
     }
 
-    // 5. Repeated content
-    const sentences = original.split(/[.!?
-]+/).filter(s => s.trim().length > 10);
+    // ── 7. Repeated sentences ────────────────────────────────────────────────
+    const sentences = original.split(/[.!?\n]+/).filter(s => s.trim().length > 10);
     const unique = new Set(sentences.map(s => s.trim().toLowerCase()));
     if (unique.size < sentences.length * 0.8 && sentences.length > 3) {
-      issues.push({ type: 'warn', msg: 'Repeated/redundant sentences detected — trim duplicates to reduce input tokens' });
+      issues.push({ type: 'warn', msg: 'Repeated/redundant sentences — remove duplicates to cut input tokens' });
     }
 
-    // 6. Unstructured long prompt
+    // ── 8. Unstructured long prompt ──────────────────────────────────────────
     const origTok = countTokensApprox(original);
-    if (origTok > 500 && !(/
-[-*1-9]/.test(original))) {
-      issues.push({ type: 'info', msg: 'Long unstructured prompt — use numbered steps or sections to guide the model' });
+    if (origTok > 500 && !/\n[-*1-9]/.test(original)) {
+      issues.push({ type: 'info', msg: 'Long unstructured prompt — use numbered steps or sections' });
     }
 
-    // 7. Cleanup
-    optimized = optimized.replace(/
-{3,}/g, '
-
-').replace(/  +/g, ' ').trim();
+    // ── Final cleanup ────────────────────────────────────────────────────────
+    optimized = optimized
+      .replace(/\bfor me\b\s*/gi, '')          // dangling 'for me'
+      .replace(/[A-Z][a-z]*\.\s+([a-z])/g, (m, c) => c.toUpperCase()) // merge double sentences
+      .replace(/\s+\?\s*$/g, '')                 // trailing lone question mark
+      .replace(/\s*[?!,]\s*$/, '')              // trailing punctuation artifact
+      .replace(/([.!?])\s+([a-z])/g, (m,p,c) => p + ' ' + c.toUpperCase()) // fix sentence starts
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\.\s*\.+/g, '.')               // double dots
+      .trim();
 
     const newTok = countTokensApprox(optimized);
-    const inputSavingPct = origTok > 0 ? Math.max(0, Math.round((1 - newTok / origTok) * 100)) : 0;
-    const hasOutputFormat = /bullet|concise|brief|short|summary/i.test(optimized);
-    const outputSavingPct = hasOutputFormat ? 25 : 10;
+    const inputSavingPct = Math.max(0, Math.round((1 - newTok / origTok) * 100));
+    const outputSavingPct = /bullet|concise|brief|short|summary/i.test(optimized) ? 25 : 10;
     const totalSavingPct = Math.round(inputSavingPct * 0.7 + outputSavingPct * 0.3);
 
     if (issues.length === 0) issues.push({ type: 'info', msg: 'Prompt is already well-structured — no changes needed' });
 
-    return { original, optimized, issues, inputSavingPct, outputSavingPct, totalSavingPct, origTok, newTok };
+    return { original, optimized, issues, origTok, newTok, inputSavingPct, outputSavingPct, totalSavingPct };
   }
 
-  function renderRefineResult(r) {
+    function renderRefineResult(r) {
     const savingColor = r.totalSavingPct >= 20 ? '#7ee787' : r.totalSavingPct >= 5 ? '#d29922' : '#8b949e';
     const issueHtml = r.issues.map(i =>
       '<div class="refine-issue ' + i.type + '">⚠ ' + escHtml(i.msg) + '</div>'
