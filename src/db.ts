@@ -44,7 +44,7 @@ db.exec(`
 `);
 
 export function createSession(id: string): void {
-  db.prepare('INSERT INTO sessions (id, started_at) VALUES (?, ?)').run(id, new Date().toISOString());
+  db.prepare('INSERT OR REPLACE INTO sessions (id, started_at) VALUES (?, ?)').run(id, new Date().toISOString());
 }
 
 export function upsertTrace(entry: TraceEntry): void {
