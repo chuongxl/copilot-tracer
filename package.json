@@ -1,6 +1,6 @@
 {
   "name": "copilot-tracer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Real-time tracing and prompt-refinement companion for GitHub Copilot CLI and VS Code Copilot — tracks tokens, AI credits, tool calls, and refined prompts with console and web UI",
   "keywords": [
     "copilot",
