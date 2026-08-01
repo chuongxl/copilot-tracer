@@ -1,8 +1,8 @@
 # copilot-tracer
 
-Real-time tracing and monitoring tool for **GitHub Copilot CLI** and **VS Code Copilot extension**.
+Real-time tracing and prompt-refinement tool for **GitHub Copilot CLI** and **VS Code Copilot extension**.
 
-Captures every prompt, response, token usage, AI credits, tool calls, skill invocations and duration — all in one place. Works via native **OpenTelemetry (OTLP)** integration built into GitHub Copilot. No wrapper, no binary replacement, no ACP proxy needed.
+Captures every prompt, response, token usage, AI credits, tool calls, skill invocations, and duration — all in one place. It also includes a prompt optimizer that rewrites prompts using role grounding, imperative clarity, output formatting, constraint injection, and noise removal. Works via native **OpenTelemetry (OTLP)** integration built into GitHub Copilot, with an optional ACP proxy mode for live CLI tracing.
 
 ---
 
@@ -10,11 +10,13 @@ Captures every prompt, response, token usage, AI credits, tool calls, skill invo
 
 - **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set 2 env vars, done.
 - **Works everywhere** — captures both Copilot CLI (`copilot -p "..."`) and VS Code Copilot Chat
+- **Prompt refinement** — rewrites prompts with stronger instructions, clearer outputs, and less noise
 - **Real-time web UI** — live dashboard at `http://localhost:4747` with dark theme
 - **Full prompt & response** — see exactly what you sent and what Copilot replied
 - **Token breakdown** — input, output, cached, reasoning, written tokens per request
 - **AI Credits tracking** — matches exactly what Copilot terminal reports (e.g. `2.59 cr`)
 - **Tool call visibility** — see every tool/skill/MCP invoked during a session
+- **ACP proxy mode** — wrap the Copilot CLI to trace live JSON-RPC traffic when needed
 - **Persistent storage** — SQLite at `~/.copilot-tracer/traces.db`, survives restarts
 - **Console + Web UI** — CLI table view or browser dashboard, your choice
 
@@ -172,6 +174,44 @@ copilot-tracer --ui console --no-proxy
 ```
 
 Live updating table in terminal. Same columns as web UI. TOTALS row pinned at top.
+
+---
+
+## Prompt Refinement
+
+The web UI exposes `POST /api/refine` to improve a raw prompt before sending it to Copilot.
+
+It currently applies these techniques:
+
+- **Role grounding** — adds an expert persona when the prompt has none
+- **Imperative clarity** — turns soft phrasing into direct instructions
+- **Output format** — asks for JSON, markdown, bullets, or steps when missing
+- **Reasoning guidance** — adds step-by-step thinking for multi-step tasks
+- **Noise removal** — strips filler like “please”, “could you”, and “I think”
+- **Constraint injection** — adds language, tone, length, and audience constraints
+- **Redundancy cleanup** — removes repeated or conflicting instructions
+
+Example request:
+
+```bash
+curl -s http://localhost:4747/api/refine \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"help me write a plan for migrating a monolith"}'
+```
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "optimized": "…",
+  "issues": [],
+  "techniques": [],
+  "origTok": 10,
+  "newTok": 22,
+  "inputSavingPct": 0
+}
+```
 
 ---
 
