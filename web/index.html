@@ -383,6 +383,11 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   let selectedId = null;
   let currentProjectId = null;
   let liveSocket = null;
+  let dashboardRefreshPending = false;
+
+  // Main socket listens for all trace events — refreshes dashboard in real-time
+  socket.on('trace:update', () => { if (getHashPage() === 'dashboard') scheduleDashboardRefresh(); });
+  socket.on('trace:done', () => { if (getHashPage() === 'dashboard') scheduleDashboardRefresh(); });
 
   function navigateTo(page, projectId) {
     if (!pages.includes(page)) page = 'dashboard';
@@ -450,6 +455,12 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   });
 
   // ── Dashboard ──────────────────────────────────
+  function scheduleDashboardRefresh() {
+    if (dashboardRefreshPending) return;
+    dashboardRefreshPending = true;
+    setTimeout(() => { dashboardRefreshPending = false; loadDashboard(); }, 500);
+  }
+
   async function loadDashboard() {
     try {
       const res = await fetch('/api/dashboard');
