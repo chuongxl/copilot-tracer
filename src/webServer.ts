@@ -4,13 +4,13 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import { getTraces, getTrace, getSessionSummary } from './db.js';
+import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary } from './db.js';
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function startWebServer(port = 4747, sessionId?: string): void {
+export function startWebServer(port = 4747, sessionId?: string, projectId?: string): void {
   const app = express();
   const httpServer = createServer(app);
   const io = new Server(httpServer, { cors: { origin: '*' } });
@@ -20,7 +20,7 @@ export function startWebServer(port = 4747, sessionId?: string): void {
 
   // Register OTLP receiver routes
   app.use(express.json({ limit: '10mb' }));
-  registerOtlpRoutes(app, sessionId ?? 'default');
+  registerOtlpRoutes(app, sessionId ?? 'default', projectId);
 
   // API
   app.get('/api/traces', (req, res) => {
@@ -90,14 +90,49 @@ ${prompt.trim()}`;
     res.json(getSessionSummary(sid));
   });
 
+  app.get('/api/dashboard', (_req, res) => {
+    res.json(getDashboard());
+  });
+
+  // Project registration — CLI registers its local path for a project
+  app.post('/api/projects', (req, res) => {
+    const { projectId, localPath } = req.body as { projectId?: string; localPath?: string };
+    if (!projectId || !localPath) {
+      res.status(400).json({ error: 'projectId and localPath required' });
+      return;
+    }
+    updateProjectLocalPath(projectId, localPath);
+    res.json({ ok: true });
+  });
+
+  // Project-scoped traces
+  app.get('/api/projects/:id/traces', (req, res) => {
+    const traces = getProjectTraces(req.params.id, 200);
+    res.json(traces);
+  });
+
+  // Project-scoped summary
+  app.get('/api/projects/:id/summary', (req, res) => {
+    res.json(getProjectSessionSummary(req.params.id));
+  });
+
   // Socket.io — push real-time updates
   io.on('connection', (socket) => {
+    const projectId = socket.handshake.query.projectId as string | undefined;
+
     // Send current state on connect
-    const sid = sessionId;
-    socket.emit('init', {
-      traces: getTraces(sid, 200),
-      summary: sid ? getSessionSummary(sid) : null,
-    });
+    if (projectId) {
+      socket.emit('init', {
+        traces: getProjectTraces(projectId, 200),
+        summary: getProjectSessionSummary(projectId),
+      });
+    } else {
+      const sid = sessionId;
+      socket.emit('init', {
+        traces: getTraces(sid, 200),
+        summary: sid ? getSessionSummary(sid) : null,
+      });
+    }
 
     const onUpdate = (entry: unknown) => socket.emit('trace:update', entry);
     const onDone = (entry: unknown) => socket.emit('trace:done', entry);

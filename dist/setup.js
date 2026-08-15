@@ -130,7 +130,7 @@ function patchVSCodeSettings(settingsPath, port) {
     return { action: wasSet ? 'updated' : 'added' };
 }
 // ── Main setup ────────────────────────────────────────────────────────────────
-export function runSetup(port) {
+export function runSetup(port, silent = false) {
     const CHECK = '✅';
     const WARN = '⚠️ ';
     const INFO = '📍';
@@ -211,14 +211,16 @@ export function runSetup(port) {
     process.env[OTEL_CONTENT_KEY] = 'true';
     process.env[OTEL_ENABLED_KEY] = 'true';
     // 6. Summary
-    const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
-    console.log('\n────────────────────────────────────────────────');
-    console.log('  One manual step required:\n');
-    console.log(`  source ~/${profileBase}`);
-    console.log(`  (opens a new terminal already? — env is already active there)`);
-    if (vscode.found)
-        console.log('\n  Restart VS Code once to pick up the new terminal env.');
-    console.log('\n  ✨ Starting tracer web UI now...');
-    console.log(`  Open: http://localhost:${port}/`);
-    console.log('────────────────────────────────────────────────\n');
+    if (!silent) {
+        const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
+        console.log('\n────────────────────────────────────────────────');
+        console.log('  One manual step required:\n');
+        console.log(`  source ~/${profileBase}`);
+        console.log(`  (opens a new terminal already? — env is already active there)`);
+        if (vscode.found)
+            console.log('\n  Restart VS Code once to pick up the new terminal env.');
+        console.log('\n  ✨ Starting tracer web UI now...');
+        console.log(`  Open: http://localhost:${port}/`);
+        console.log('────────────────────────────────────────────────\n');
+    }
 }
