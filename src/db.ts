@@ -93,7 +93,16 @@ export function findProjectByRepo(repoUrl: string): { id: string; path: string; 
 }
 
 export function createSession(id: string, projectId?: string): void {
-  db.prepare('INSERT OR REPLACE INTO sessions (id, started_at, project_id) VALUES (?, ?, ?)').run(id, new Date().toISOString(), projectId ?? null);
+  // Backfill-safe upsert: insert if missing, set project_id only when a project is
+  // provided AND the session currently has none (never null out an existing link).
+  db.prepare(`
+    INSERT INTO sessions (id, started_at, project_id) VALUES (?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project_id = CASE
+        WHEN excluded.project_id IS NOT NULL THEN COALESCE(sessions.project_id, excluded.project_id)
+        ELSE sessions.project_id
+      END
+  `).run(id, new Date().toISOString(), projectId ?? null);
 }
 
 export function getDashboard(): DashboardData {

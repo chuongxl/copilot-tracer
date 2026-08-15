@@ -80,14 +80,27 @@ interface InFlight {
 
 const inFlight = new Map<string, InFlight>();  // traceId → InFlight
 
-// Sessions we've created in DB (avoid duplicate createSession calls)
-const knownSessions = new Set<string>();
-
+// Sessions are created lazily. Always upsert so project_id gets backfilled
+// when the session was created earlier without a project.
 function ensureSession(sessionId: string, projectId?: string) {
-  if (!knownSessions.has(sessionId)) {
-    createSession(sessionId, projectId);
-    knownSessions.add(sessionId);
+  createSession(sessionId, projectId);
+}
+
+// ── Project resolution ────────────────────────────────────────────────────────
+// Precedence: repo URL > working dir > default (CLI) project.
+// If none match, the session keeps no project (traces still appear on live page).
+function resolveProjectId(repoUrl: string | number | undefined, workingDir: string | undefined, defaultProjectId?: string): string | undefined {
+  if (repoUrl) return ensureProjectByRepo(String(repoUrl));
+  if (workingDir) return ensureProject(workingDir);
+  return defaultProjectId;
+}
+
+function detectWorkingDir(attrs: OtlpKeyValue[] | undefined): string | undefined {
+  for (const key of ['process.working_directory', 'github.copilot.working_dir']) {
+    const v = getAttr(attrs, key);
+    if (v && String(v).trim()) return String(v).trim();
   }
+  return undefined;
 }
 
 // ── Process one batch of spans ────────────────────────────────────────────────
@@ -96,7 +109,7 @@ const pendingChatIds = new Map<string, string[]>(); // `chat:${traceId}` → lis
 // Buffer tool calls that arrive before invoke_agent
 const pendingToolCalls = new Map<string, ToolCall[]>(); // traceId → tool calls
 
-function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string) {
+function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, workingDir?: string) {
   for (const span of spans) {
     // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
     if (process.env.COPILOT_TRACER_DEBUG === '1') {
@@ -115,10 +128,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string) 
 
       // Extract repo URL for auto project detection
       const repoUrl = getAttr(attrs, 'github.copilot.git.repository');
-      let resolvedProjectId = projectId;
-      if (!resolvedProjectId && repoUrl) {
-        resolvedProjectId = ensureProjectByRepo(String(repoUrl));
-      }
+      const resolvedProjectId = resolveProjectId(repoUrl, workingDir, projectId);
 
       // Extract prompt from gen_ai.input.messages (real attr name from copilot)
       let promptText = '';
@@ -328,7 +338,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string) 
           skillCount: 0, agentCount: 0, mcpCount: 0,
           status: 'done',
         };
-        ensureSession(sessionId, projectId);
+        ensureSession(sessionId, resolveProjectId(getAttr(attrs, 'github.copilot.git.repository'), workingDir, projectId));
         upsertTrace(entry);
         const chatKey = `chat:${traceId}`;
         const existing = pendingChatIds.get(chatKey) ?? [];
@@ -442,9 +452,10 @@ export function registerOtlpRoutes(app: Express, defaultSessionId: string, proje
           ?? getAttr(resAttrs, 'session.id')
           ?? getAttr(resAttrs, 'github.copilot.conversation_id');
         const sessionId = String(sessionFromOtel ?? defaultSessionId);
+        const workingDir = detectWorkingDir(resAttrs);
 
         for (const ss of rs.scopeSpans ?? []) {
-          processSpans(ss.spans ?? [], sessionId, projectId);
+          processSpans(ss.spans ?? [], sessionId, projectId, workingDir);
         }
       }
 

@@ -14,7 +14,7 @@
  *   chat <model> span attrs: same as above
  *   User message event: github.copilot.user.message
  */
-import { upsertTrace, createSession, deleteTrace, ensureProjectByRepo } from './db.js';
+import { upsertTrace, createSession, deleteTrace, ensureProject, ensureProjectByRepo } from './db.js';
 import { traceEvents } from './proxy.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs, key) {
@@ -37,20 +37,35 @@ function nanoToIso(nano) {
     return new Date(nanoToMs(nano)).toISOString();
 }
 const inFlight = new Map(); // traceId → InFlight
-// Sessions we've created in DB (avoid duplicate createSession calls)
-const knownSessions = new Set();
+// Sessions are created lazily. Always upsert so project_id gets backfilled
+// when the session was created earlier without a project.
 function ensureSession(sessionId, projectId) {
-    if (!knownSessions.has(sessionId)) {
-        createSession(sessionId, projectId);
-        knownSessions.add(sessionId);
+    createSession(sessionId, projectId);
+}
+// ── Project resolution ────────────────────────────────────────────────────────
+// Precedence: repo URL > working dir > default (CLI) project.
+// If none match, the session keeps no project (traces still appear on live page).
+function resolveProjectId(repoUrl, workingDir, defaultProjectId) {
+    if (repoUrl)
+        return ensureProjectByRepo(String(repoUrl));
+    if (workingDir)
+        return ensureProject(workingDir);
+    return defaultProjectId;
+}
+function detectWorkingDir(attrs) {
+    for (const key of ['process.working_directory', 'github.copilot.working_dir']) {
+        const v = getAttr(attrs, key);
+        if (v && String(v).trim())
+            return String(v).trim();
     }
+    return undefined;
 }
 // ── Process one batch of spans ────────────────────────────────────────────────
 // Track standalone chat entries so invoke_agent can replace them (multiple chat spans per traceId)
 const pendingChatIds = new Map(); // `chat:${traceId}` → list of entryIds
 // Buffer tool calls that arrive before invoke_agent
 const pendingToolCalls = new Map(); // traceId → tool calls
-function processSpans(spans, sessionId, projectId) {
+function processSpans(spans, sessionId, projectId, workingDir) {
     for (const span of spans) {
         // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
         if (process.env.COPILOT_TRACER_DEBUG === '1') {
@@ -67,10 +82,7 @@ function processSpans(spans, sessionId, projectId) {
             const durationMs = endMs - startMs;
             // Extract repo URL for auto project detection
             const repoUrl = getAttr(attrs, 'github.copilot.git.repository');
-            let resolvedProjectId = projectId;
-            if (!resolvedProjectId && repoUrl) {
-                resolvedProjectId = ensureProjectByRepo(String(repoUrl));
-            }
+            const resolvedProjectId = resolveProjectId(repoUrl, workingDir, projectId);
             // Extract prompt from gen_ai.input.messages (real attr name from copilot)
             let promptText = '';
             let responseText = '';
@@ -282,7 +294,7 @@ function processSpans(spans, sessionId, projectId) {
                     skillCount: 0, agentCount: 0, mcpCount: 0,
                     status: 'done',
                 };
-                ensureSession(sessionId, projectId);
+                ensureSession(sessionId, resolveProjectId(getAttr(attrs, 'github.copilot.git.repository'), workingDir, projectId));
                 upsertTrace(entry);
                 const chatKey = `chat:${traceId}`;
                 const existing = pendingChatIds.get(chatKey) ?? [];
@@ -402,8 +414,9 @@ export function registerOtlpRoutes(app, defaultSessionId, projectId) {
                     ?? getAttr(resAttrs, 'session.id')
                     ?? getAttr(resAttrs, 'github.copilot.conversation_id');
                 const sessionId = String(sessionFromOtel ?? defaultSessionId);
+                const workingDir = detectWorkingDir(resAttrs);
                 for (const ss of rs.scopeSpans ?? []) {
-                    processSpans(ss.spans ?? [], sessionId, projectId);
+                    processSpans(ss.spans ?? [], sessionId, projectId, workingDir);
                 }
             }
             res.status(200).json({ partialSuccess: {} });

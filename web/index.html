@@ -386,8 +386,9 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   let dashboardRefreshPending = false;
 
   // Main socket listens for all trace events — refreshes dashboard in real-time
-  socket.on('trace:update', () => { if (getHashPage() === 'dashboard') scheduleDashboardRefresh(); });
-  socket.on('trace:done', () => { if (getHashPage() === 'dashboard') scheduleDashboardRefresh(); });
+  // (regardless of active page, so it's fresh when you switch back)
+  socket.on('trace:update', () => scheduleDashboardRefresh());
+  socket.on('trace:done', () => scheduleDashboardRefresh());
 
   function navigateTo(page, projectId) {
     if (!pages.includes(page)) page = 'dashboard';
