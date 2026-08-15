@@ -1,85 +1,173 @@
 # copilot-tracer
 
-Real-time tracing and monitoring tool for **GitHub Copilot CLI** and **VS Code Copilot extension**.
+Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI** and **VS Code Copilot extension**.
 
-Captures every prompt, response, token usage, AI credits, tool calls, skill invocations and duration — all in one place. Works via native **OpenTelemetry (OTLP)** integration built into GitHub Copilot. No wrapper, no binary replacement, no ACP proxy needed.
+Captures every prompt, response, token usage, AI credits, tool calls, and duration — all in one place. Runs as a background daemon that collects data from all your projects automatically. Includes a web dashboard with project overview and per-project live tracing.
 
 ---
 
 ## Features
 
-- **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set 2 env vars, done.
-- **Works everywhere** — captures both Copilot CLI (`copilot -p "..."`) and VS Code Copilot Chat
-- **Real-time web UI** — live dashboard at `http://localhost:4747` with dark theme
-- **Full prompt & response** — see exactly what you sent and what Copilot replied
-- **Token breakdown** — input, output, cached, reasoning, written tokens per request
+- **Daemon mode** — install once, run forever. Collects traces from all projects automatically
+- **Auto project detection** — detects project from `github.copilot.git.repository` in OTLP spans
+- **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set env vars, done.
+- **Works everywhere** — captures both Copilot CLI and VS Code Copilot Chat
+- **Dashboard** — overview of all projects with token usage, credits, and session counts
+- **Live tracer** — real-time trace table per project with detail panel
+- **Prompt refinement** — rewrites prompts with stronger instructions and less noise
 - **AI Credits tracking** — matches exactly what Copilot terminal reports (e.g. `2.59 cr`)
-- **Tool call visibility** — see every tool/skill/MCP invoked during a session
 - **Persistent storage** — SQLite at `~/.copilot-tracer/traces.db`, survives restarts
-- **Console + Web UI** — CLI table view or browser dashboard, your choice
 
 ---
 
-## Prerequisites
-
-- Node.js v18+ (tested on v24)
-- GitHub Copilot CLI (`copilot` command available in terminal)
-- VS Code 1.99+ with built-in Copilot (no extension install needed)
-
----
-
-## Install
+## Quick Start (one-time setup)
 
 ```bash
 npm install -g copilot-tracer
+copilot-tracer --setup --daemon
 ```
 
-Requires Node.js v18+. The `copilot-tracer` command is available globally after install.
+This will:
+1. Detect your Copilot CLI and VS Code installation
+2. Patch `~/.zshrc` with OTEL env vars
+3. Patch VS Code `settings.json` with terminal env vars
+4. Start the daemon on port 4747
 
-> **Building from source**
-> ```bash
-> git clone https://github.com/chuongnd/copilot-tracer
-> cd copilot-tracer && npm install && npx tsc
-> npm link   # registers global command from local build
-> ```
-
----
-
-## Setup (one-time)
-
-Run the auto-setup command. It detects your Copilot CLI and VS Code installation and injects the required config automatically:
-
-```bash
-copilot-tracer --setup
-```
-
-What it does:
-- Detects `copilot` CLI path and version
-- Detects VS Code version and confirms built-in Copilot
-- Patches `~/.zshrc` (or `~/.bashrc`) with OTEL env vars
-- Patches VS Code `settings.json` with `terminal.integrated.env.osx` block
-
-Example output:
-```
-✅ GitHub Copilot CLI detected — /usr/bin/copilot v1.0.77
-✅ Visual Studio Code detected — 1.131.0 (Built-in Copilot)
-✅ Shell profile patched: .zshrc
-✅ VS Code settings patched
-```
-
-Then apply the env vars:
+Then apply env vars in your current shell:
 
 ```bash
 source ~/.zshrc
 ```
 
-Restart VS Code completely (Cmd+Q, then reopen).
+Restart VS Code once. After that, the daemon collects traces from all your Copilot sessions automatically.
+
+Open **http://localhost:4747** to see the dashboard.
+
+---
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  copilot-tracer --daemon (runs once, stays running)      │
+│                                                          │
+│  OTLP Receiver ← Copilot CLI + VS Code                   │
+│  (auto-detects project from github.copilot.git.repository)│
+│                                                          │
+│  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
+└─────────────────────────────────────────────────────────┘
+
+Copilot CLI / VS Code Copilot Chat
+         │
+         │  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
+         ↓
+   POST /v1/traces (OpenTelemetry OTLP JSON)
+         │
+         ↓
+   copilot-tracer parses spans → tokens, credits, tool calls
+         │
+         ↓
+   SQLite DB (~/.copilot-tracer/traces.db)
+         │
+         ├→ Dashboard: all projects overview
+         └→ Live Tracer: real-time per-project view
+```
+
+---
+
+## Usage
+
+### Daemon mode (recommended)
+
+```bash
+# First time: setup + start daemon
+copilot-tracer --setup --daemon
+
+# Subsequent starts
+copilot-tracer --daemon
+
+# Custom port
+copilot-tracer --daemon --port 8080
+```
+
+### Normal mode (legacy)
+
+Per-session mode with optional ACP proxy for live CLI tracing:
+
+```bash
+# Web UI only (read from DB)
+copilot-tracer --ui web --no-proxy
+
+# With project path
+copilot-tracer --ui web --no-proxy --project-path /path/to/repo
+
+# With ACP proxy (wraps copilot CLI)
+copilot-tracer --ui web
+```
+
+### Setup only
+
+```bash
+# Just patch env vars without starting
+copilot-tracer --setup
+```
+
+---
+
+## Dashboard
+
+Open http://localhost:4747 after starting the daemon.
+
+- **Summary cards** — total projects, sessions, tokens, credits
+- **Project cards** — each project shows path, session count, tokens, credits, last active
+- **Click a project** → opens live tracer filtered to that project
+
+---
+
+## Live Tracer
+
+Real-time trace table for a specific project.
+
+**Table columns:**
+| Date/Time | Prompt | AI Credits | Duration | Cached | Written | Reasoning | Skills | Agents | MCPs |
+
+**Interactive features:**
+- Click any row → detail panel: full prompt, response, reasoning, call graph
+- Click AI Credits → cost breakdown per token type
+- Click Reasoning → full reasoning text
+- Click Skills / Agents / MCPs → filtered call list
+- Real-time updates via Socket.io
+
+---
+
+## Prompt Refinement
+
+The web UI includes a prompt optimizer. Click "Refine Prompt" in the trace detail panel.
+
+Techniques applied:
+- Role grounding, imperative clarity, output format, chain-of-thought
+- Noise removal, constraint injection, redundancy cleanup
+
+---
+
+## CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--daemon` | Run as background daemon (always-on OTLP receiver) |
+| `--setup` | Auto-detect and configure env vars |
+| `--port <port>` | Web UI port (default: 4747) |
+| `--ui <mode>` | UI mode: console \| web \| both (normal mode only) |
+| `--no-proxy` | Web/console only, no ACP proxy (normal mode only) |
+| `--project-path <path>` | Project source path (normal mode only) |
+| `--session <id>` | Custom session ID (normal mode only) |
+| `--debug` | Verbose logging |
 
 ---
 
 ## Manual Setup (alternative)
 
-If you prefer to configure manually, add these to `~/.zshrc`:
+Add to `~/.zshrc`:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
@@ -99,107 +187,9 @@ For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 
 ---
 
-## Start Tracer
-
-```bash
-copilot-tracer --ui web --port 4747 --no-proxy
-```
-
-Open **http://localhost:4747** — shows "waiting for copilot CLI activity".
-
----
-
-## Use Copilot Normally
-
-No change to how you use Copilot. Just run as usual:
-
-```bash
-# Copilot CLI
-copilot -p "how to convert microservice to modular" --allow-all-tools
-
-# Or use Copilot Chat in VS Code
-```
-
-Traces appear instantly in the web UI as each request completes.
-
----
-
-## How It Works
-
-```
-copilot CLI  /  VS Code Copilot Chat
-         |
-         |  reads OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
-         |
-         ↓  POST /v1/traces  (OpenTelemetry OTLP JSON)
-  copilot-tracer OTLP receiver
-         |
-         ↓
-  Parse spans → extract prompt, response, tokens, credits, tool calls
-         |
-         ↓
-  SQLite DB  (~/.copilot-tracer/traces.db)
-         |
-         ↓
-  Web UI (Socket.io real-time)  +  Console table
-```
-
-Copilot has built-in OpenTelemetry instrumentation. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, it pushes all trace data to that endpoint automatically — both CLI and VS Code extension.
-
----
-
-## Web UI
-
-Open http://localhost:4747 after starting the tracer.
-
-**Table columns:**
-| Date/Time | Prompt | AI Credits | Duration | Cached | Written | Reasoning | Skills | Agents | MCPs |
-
-**Interactive features:**
-- Click any row → detail panel: full prompt, full response, reasoning text, call graph
-- Click AI Credits → cost breakdown per token type
-- Click Reasoning count → full reasoning text
-- Click Skills / Agents / MCPs pill → filtered call list with input/output/duration
-- Real-time updates via Socket.io — no page refresh needed
-- Dark theme
-
----
-
-## Console UI
-
-```bash
-copilot-tracer --ui console --no-proxy
-```
-
-Live updating table in terminal. Same columns as web UI. TOTALS row pinned at top.
-
----
-
-## CLI Flags
-
-| Flag | Description |
-|------|-------------|
-| `--ui web` | Start web UI (default) |
-| `--ui console` | Start console table UI |
-| `--ui both` | Both web + console |
-| `--port 4747` | Web UI port (default: 4747) |
-| `--no-proxy` | Web/console only, no ACP proxy |
-| `--session <id>` | Custom session ID |
-| `--setup` | Auto-detect and configure env vars |
-| `--debug` | Verbose logging |
-
----
-
 ## Storage
 
 Traces persist to `~/.copilot-tracer/traces.db` (SQLite). Safe to keep across sessions.
-
-To test the web UI without running a live Copilot session:
-
-```bash
-node test-seed.mjs   # seeds 4 sample traces (source build only)
-copilot-tracer --ui web --no-proxy --session test-session-001
-```
 
 ---
 
@@ -213,18 +203,24 @@ npx tsc          # compile to dist/
 To publish a new release to npm:
 
 ```bash
-# Bump patch version (1.0.0 → 1.0.1), build, publish, git-tag
+# Login first
+npm login
+
+# Patch version (1.0.4 → 1.0.5)
 bash scripts/publish.sh
 
-# Bump minor version
+# Minor version
 bash scripts/publish.sh minor
 
-# Publish a beta pre-release
+# Major version
+bash scripts/publish.sh major
+
+# Beta pre-release
 bash scripts/publish.sh --tag beta --pre beta
 ```
 
 The script will:
-1. Check npm authentication (`npm login` required first)
+1. Check npm authentication
 2. Verify git working tree is clean
 3. Type-check + build
 4. Verify `better-sqlite3` native module loads

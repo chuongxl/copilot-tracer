@@ -5,10 +5,142 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Copilot Tracer</title>
 <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script type="module">
+  import * as webllm from 'https://esm.run/@mlc-ai/web-llm';
+
+  let refineOpen = false;
+  let engine = null;
+
+  const tok = t => Math.ceil((t || '').length / 4);
+
+  function analyzePrompt(t) {
+    const issues = [], suggestions = [];
+    if ([/\bplease\b/,/\bcould you\b/,/\bcan you\b/,/\bI want you to\b/,/\bkindly\b/,/\bthank you\b/,/\bif you don.t mind\b/].some(r => r.test(t)))
+      issues.push({ type:'warn', msg:'Filler / polite noise (please, can you, thank you…)' });
+    if ([/\bI think\b/,/\bmaybe\b/,/\bkind of\b/,/\bsort of\b/].some(r => r.test(t)))
+      issues.push({ type:'warn', msg:'Hedging language reduces precision (I think, maybe, kind of…)' });
+    if (/\bhelp me with\b|\bhelp me understand\b/i.test(t))
+      issues.push({ type:'warn', msg:'Indirect phrasing — use an imperative verb: Explain / List / Generate / Analyze' });
+    if (/\bmake it (?:good|nice|better|great)\b/i.test(t))
+      issues.push({ type:'warn', msg:'Vague quality instruction — specify criteria (concise, bullet-list, ≤200 words…)' });
+    const hasFormat = /\bjson\b|\bmarkdown\b|\bbullet\b|\bnumbered\b|\bstep.by.step\b/i.test(t);
+    if (!hasFormat && t.length > 60) issues.push({ type:'info', msg:'No output format — add: "Respond in bullet points / JSON / numbered steps"' });
+    const hasRole = /\byou are\b|\bact as\b|\bexpert\b|\bsenior\b/i.test(t);
+    if (!hasRole && t.length > 80) issues.push({ type:'info', msg:'No role/persona — prepend "You are a <expert>." for better quality' });
+    if (!/\bstep by step\b|\bthink\b/i.test(t) && /\bdebug\b|\banalyze\b|\bcompare\b|\bdesign\b/i.test(t))
+      issues.push({ type:'info', msg:'Complex task — add "Think step by step." for chain-of-thought reasoning' });
+    if (!issues.length) issues.push({ type:'info', msg:'No obvious issues — prompt looks well-structured' });
+    if (!hasRole && t.length > 80) suggestions.push('Add a role: "You are a senior software engineer."');
+    if (!hasFormat && t.length > 60) suggestions.push('Specify output: "Respond in numbered steps."');
+    return { issues, suggestions };
+  }
+
+  function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  window.toggleRefine = async function(prompt) {
+    const panel = document.getElementById('refine-panel');
+    if (!panel) return;
+    if (refineOpen) { panel.classList.remove('open'); refineOpen = false; return; }
+    refineOpen = true;
+    panel.classList.add('open');
+
+    const origTok = tok(prompt);
+    const { issues, suggestions } = analyzePrompt(prompt);
+
+    const issueHtml = issues.map(i => `<div class="refine-issue ${i.type}">⚠ ${escHtml(i.msg)}</div>`).join('');
+    const suggHtml = suggestions.length
+      ? `<div class=refine-section-title>Quick Suggestions</div><div class=refine-suggestions>${suggestions.map(s=>`<div class=refine-suggestion>💡 ${escHtml(s)}</div>`).join('')}</div>`
+      : '';
+
+    panel.innerHTML = `
+      <div class=refine-section-title>Issues Found</div>
+      <div class=refine-issues>${issueHtml}</div>
+      ${suggHtml}
+      <div class=refine-section-title>Optimized Prompt</div>
+      <div id=refine-optimizing style="color:#8b949e;font-size:12px;padding:6px 0">
+        <span class=refine-spinner></span> Optimizing with WebLLM…
+        <div id=refine-progress style="margin-top:5px;font-size:10px;color:#58a6ff"></div>
+      </div>
+      <div class=refine-optimized id=refined-text style="display:none"></div>
+      <div id=refine-actions style="display:none">
+        <button class="refine-copy-btn" onclick="copyRefined()">📋 Copy optimized prompt</button>
+        <div class="refine-stats" id=refine-stats></div>
+      </div>`;
+
+    const progressEl = () => document.getElementById('refine-progress');
+    const optimizingEl = document.getElementById('refine-optimizing');
+    const refinedEl = document.getElementById('refined-text');
+    const actionsEl = document.getElementById('refine-actions');
+
+    try {
+      if (!engine) {
+        progressEl() && (progressEl().textContent = 'Loading model… (first run ~650 MB, cached after)');
+        engine = await webllm.CreateMLCEngine('Llama-3.2-1B-Instruct-q4f16_1-MLC', {
+          initProgressCallback: p => { const el = progressEl(); if (el) el.textContent = p.text || ''; }
+        });
+      }
+      if (progressEl()) progressEl().textContent = 'Generating…';
+
+      const sys = `You are a prompt engineering expert. Rewrite the user prompt by:
+1. Adding a role ("You are a <expert>.") if missing
+2. Replacing indirect/hedging phrases with direct imperatives (Explain / List / Generate)
+3. Adding output format (numbered steps / bullet list / JSON) if missing
+4. Adding "Think step by step." for complex tasks (debug, analyze, compare)
+5. Removing filler words (please, can you, thank you, maybe, I think)
+6. Adding constraints (language, length, audience) if missing
+Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
+
+      const reply = await engine.chat.completions.create({
+        messages: [{ role:'system', content:sys }, { role:'user', content:prompt }],
+        temperature: 0.3,
+        max_tokens: 512,
+      });
+
+      const optimized = (reply.choices[0]?.message?.content || '').trim();
+      const newTok = tok(optimized);
+      const pct = origTok > 0 ? Math.max(0, Math.round((1 - newTok / origTok) * 100)) : 0;
+      const col = pct >= 20 ? '#7ee787' : pct >= 5 ? '#d29922' : '#8b949e';
+
+      optimizingEl.style.display = 'none';
+      refinedEl.textContent = optimized;
+      refinedEl.style.display = 'block';
+      actionsEl.style.display = 'block';
+      document.getElementById('refine-stats').innerHTML = `
+        <div class=refine-stat><div class=rv style=color:${col}>${pct > 0 ? '-'+pct+'%' : '0%'}</div><div class=rl>Input Saving</div></div>
+        <div class=refine-stat><div class=rv style=color:#8b949e>${origTok} → ${newTok}</div><div class=rl>Approx Tokens</div></div>`;
+    } catch(e) {
+      optimizingEl.innerHTML = `<span style="color:#f85149">⚠ WebLLM error: ${escHtml(e.message)}</span>`;
+    }
+  };
+
+  window.copyRefined = function() {
+    const el = document.getElementById('refined-text');
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText).then(() => {
+      const btn = document.querySelector('.refine-copy-btn');
+      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => btn.textContent = '📋 Copy optimized prompt', 1500); }
+    });
+  };
+</script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, monospace; font-size: 13px; }
-  
+  body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, monospace; font-size: 13px; display: flex; height: 100vh; }
+
+  /* ── Sidebar ─────────────────────────────────── */
+  .sidebar { width: 56px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; flex-shrink: 0; }
+  .sidebar-brand { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-bottom: 12px; }
+  .sidebar-link { width: 40px; height: 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px; text-decoration: none; color: #8b949e; transition: all 0.15s; cursor: pointer; gap: 2px; }
+  .sidebar-link:hover { background: #21262d; color: #c9d1d9; }
+  .sidebar-link.active { background: #1f3358; color: #58a6ff; }
+  .sidebar-icon { font-size: 16px; line-height: 1; }
+  .sidebar-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.3px; }
+
+  /* ── Main content area ───────────────────────── */
+  .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .page { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+  .page.active { display: flex; }
+
+  /* ── Header (live tracer) ────────────────────── */
   header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
   header h1 { color: #58a6ff; font-size: 16px; font-weight: 700; }
   .badge { background: #21262d; border: 1px solid #30363d; border-radius: 12px; padding: 2px 10px; font-size: 11px; color: #8b949e; }
@@ -16,7 +148,8 @@
   #status-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
 
-  .stats-bar { background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 20px; display: flex; gap: 24px; }
+  /* ── Stats bar (live tracer) ─────────────────── */
+  .stats-bar { background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 20px; display: flex; gap: 24px; flex-wrap: wrap; }
   .stat { display: flex; flex-direction: column; }
   .stat-label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
   .stat-value { font-size: 15px; font-weight: 700; color: #e6edf3; }
@@ -25,9 +158,10 @@
   .stat-value.skills { color: #d2a8ff; }
   .stat-value.mcps { color: #56d364; }
 
-  .main { display: flex; height: calc(100vh - 100px); }
+  /* ── Main split (live tracer) ────────────────── */
+  .main { display: flex; flex: 1; overflow: hidden; }
   .table-panel { flex: 1; overflow: auto; }
-  .detail-panel { width: 420px; border-left: 1px solid #30363d; background: #161b22; overflow: auto; display: none; flex-direction: column; }
+  .detail-panel { width: 420px; border-left: 1px solid #30363d; background: #161b22; overflow: auto; display: none; flex-direction: column; flex-shrink: 0; }
   .detail-panel.open { display: flex; }
 
   table { width: 100%; border-collapse: collapse; }
@@ -57,7 +191,7 @@
   .pill-mcp { background: #0a3622; color: #56d364; }
   .pill:hover { opacity: 0.8; filter: brightness(1.2); }
 
-  /* Detail panel */
+  /* ── Detail panel ────────────────────────────── */
   .detail-header { padding: 14px 16px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
   .detail-header h3 { color: #58a6ff; font-size: 13px; }
   .close-btn { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 18px; line-height: 1; }
@@ -70,7 +204,7 @@
   .detail-box.response { color: #56d364; }
   .detail-box.prompt { color: #e6edf3; max-height: none; overflow: visible; }
 
-  /* Call graph */
+  /* ── Call graph ──────────────────────────────── */
   .call-tree { font-family: monospace; font-size: 12px; }
   .call-node { padding: 4px 0; }
   .call-node-header { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 6px; border-radius: 4px; }
@@ -83,7 +217,32 @@
   .call-io .label { color: #58a6ff; margin-right: 4px; }
   .call-io.error { color: #f85149; }
 
-  /* Token detail modal */
+  /* ── Refine panel ────────────────────────────── */
+  .refine-btn { background: #1f2d1f; border: 1px solid #238636; color: #7ee787; border-radius: 6px; padding: 5px 12px; font-size: 11px; cursor: pointer; margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; transition: all .15s; }
+  .refine-btn:hover { background: #238636; color: #fff; }
+  .refine-panel { margin-top: 12px; background: #0d1117; border: 1px solid #238636; border-radius: 8px; padding: 14px; display: none; }
+  .refine-panel.open { display: block; }
+  .refine-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #8b949e; margin-bottom: 6px; margin-top: 12px; }
+  .refine-section-title:first-child { margin-top: 0; }
+  .refine-issues { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .refine-issue { font-size: 11px; padding: 4px 8px; border-radius: 4px; background: #21262d; border-left: 3px solid; }
+  .refine-issue.warn  { border-color: #d29922; color: #d29922; }
+  .refine-issue.info  { border-color: #58a6ff; color: #8b949e; }
+  .refine-optimized { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #7ee787; max-height: 260px; overflow: auto; }
+  .refine-stats { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+  .refine-stat { background: #21262d; border-radius: 6px; padding: 6px 12px; text-align: center; }
+  .refine-stat .rv { font-size: 18px; font-weight: 700; }
+  .refine-stat .rl { font-size: 10px; color: #8b949e; margin-top: 1px; }
+  .refine-copy-btn { margin-top: 10px; background: #21262d; border: 1px solid #30363d; color: #8b949e; border-radius: 6px; padding: 4px 12px; font-size: 11px; cursor: pointer; }
+  .refine-copy-btn:hover { color: #e6edf3; border-color: #58a6ff; }
+  .refine-techniques { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .refine-tag { background: #0d2230; border: 1px solid #1f6feb; color: #58a6ff; border-radius: 10px; padding: 2px 9px; font-size: 10px; }
+  .refine-suggestions { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .refine-suggestion { font-size: 11px; padding: 4px 8px; border-radius: 4px; background: #0d2230; border-left: 3px solid #1f6feb; color: #8b949e; }
+  @keyframes refine-spin { to { transform: rotate(360deg); } }
+  .refine-spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: refine-spin .7s linear infinite; vertical-align: middle; margin-right: 4px; }
+
+  /* ── Modal ───────────────────────────────────── */
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
   .modal-overlay.open { display: flex; }
   .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; width: 560px; max-height: 80vh; overflow: auto; }
@@ -91,58 +250,118 @@
   .modal-close { float: right; background: none; border: none; color: #8b949e; cursor: pointer; font-size: 20px; margin-top: -4px; }
 
   .empty { padding: 40px; text-align: center; color: #8b949e; }
+
+  /* ── Dashboard page ──────────────────────────── */
+  .dash-header { padding: 20px 24px 0; }
+  .dash-header h2 { color: #e6edf3; font-size: 18px; font-weight: 600; }
+  .dash-header p { color: #8b949e; font-size: 12px; margin-top: 4px; }
+
+  .dash-totals { display: flex; gap: 16px; padding: 16px 24px; flex-wrap: wrap; }
+  .dash-total-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 20px; min-width: 140px; flex: 1; }
+  .dash-total-label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .dash-total-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .dash-total-value.credits { color: #f0883e; }
+  .dash-total-value.tokens { color: #79c0ff; }
+  .dash-total-value.sessions { color: #d2a8ff; }
+
+  .dash-section-title { padding: 16px 24px 8px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .dash-projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 0 24px 24px; }
+  .dash-project-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; cursor: pointer; transition: border-color 0.15s; }
+  .dash-project-card:hover { border-color: #58a6ff; }
+  .dash-project-path { color: #e6edf3; font-size: 13px; font-weight: 600; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dash-project-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+  .dash-project-stat { display: flex; flex-direction: column; }
+  .dash-project-stat-label { font-size: 9px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .dash-project-stat-value { font-size: 14px; font-weight: 600; color: #c9d1d9; margin-top: 2px; }
+  .dash-project-stat-value.credits { color: #f0883e; }
+  .dash-project-last-active { margin-top: 10px; font-size: 11px; color: #8b949e; }
+  .dash-empty { padding: 60px 24px; text-align: center; color: #8b949e; }
+  .dash-empty p { margin-top: 8px; font-size: 12px; }
+  .dash-empty code { background: #21262d; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #79c0ff; }
 </style>
 </head>
 <body>
 
-<header>
-  <span id="status-dot"></span>
-  <h1>🤖 Copilot Tracer</h1>
-  <span class="badge live">LIVE</span>
-  <span class="badge" id="session-badge">Session: —</span>
-</header>
+<!-- ── Sidebar ──────────────────────────────── -->
+<nav class="sidebar">
+  <div class="sidebar-brand">🤖</div>
+  <a href="#/dashboard" class="sidebar-link active" data-page="dashboard" title="Dashboard">
+    <span class="sidebar-icon">📊</span>
+    <span class="sidebar-label">Home</span>
+  </a>
+  <a href="#/live" class="sidebar-link" data-page="live" title="Live Tracer">
+    <span class="sidebar-icon">📡</span>
+    <span class="sidebar-label">Live</span>
+  </a>
+</nav>
 
-<div class="stats-bar">
-  <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
-  <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">0.00 cr | $0.0000</span></div>
-  <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
-  <div class="stat"><span class="stat-label">Cached</span><span class="stat-value tokens" id="s-cached">0</span></div>
-  <div class="stat"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#d2a8ff" id="s-reasoning">0</span></div>
-  <div class="stat"><span class="stat-label">Skill Calls</span><span class="stat-value skills" id="s-skills">0</span></div>
-  <div class="stat"><span class="stat-label">Agent Calls</span><span class="stat-value tokens" id="s-agents">0</span></div>
-  <div class="stat"><span class="stat-label">MCP Calls</span><span class="stat-value mcps" id="s-mcps">0</span></div>
-  <div class="stat"><span class="stat-label">Total Duration</span><span class="stat-value" id="s-duration">0s</span></div>
-</div>
+<!-- ── Main content ─────────────────────────── -->
+<div class="content">
 
-<div class="main">
-  <div class="table-panel">
-    <table>
-      <thead>
-        <tr>
-          <th>Date / Time</th>
-          <th>Prompt</th>
-          <th>AI Credits</th>
-          <th>Duration</th>
-          <th>Cached Tokens</th>
-          <th>Written Tokens</th>
-          <th>Reasoning Tokens</th>
-          <th>Skills</th>
-          <th>Agents</th>
-          <th>MCPs</th>
-        </tr>
-      </thead>
-      <tbody id="trace-tbody">
-        <tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>
-      </tbody>
-    </table>
+  <!-- ═══════════════ DASHBOARD PAGE ═══════════════ -->
+  <div id="page-dashboard" class="page active">
+    <div class="dash-header">
+      <h2>Dashboard</h2>
+      <p>All traced projects and sessions</p>
+    </div>
+    <div class="dash-totals" id="dash-totals"></div>
+    <div class="dash-section-title">Projects</div>
+    <div id="dash-projects" class="dash-projects"></div>
   </div>
 
-  <div class="detail-panel" id="detail-panel">
-    <div class="detail-header">
-      <h3 id="detail-title">Trace Detail</h3>
-      <button class="close-btn" onclick="closeDetail()">×</button>
+  <!-- ═══════════════ LIVE TRACER PAGE ═══════════════ -->
+  <div id="page-live" class="page">
+    <header>
+      <span id="status-dot"></span>
+      <h1>🤖 Copilot Tracer</h1>
+      <span class="badge live">LIVE</span>
+      <span class="badge" id="session-badge">Session: —</span>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
+      <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">0.00 cr | $0.0000</span></div>
+      <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
+      <div class="stat"><span class="stat-label">Cached</span><span class="stat-value tokens" id="s-cached">0</span></div>
+      <div class="stat"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#d2a8ff" id="s-reasoning">0</span></div>
+      <div class="stat"><span class="stat-label">Skill Calls</span><span class="stat-value skills" id="s-skills">0</span></div>
+      <div class="stat"><span class="stat-label">Agent Calls</span><span class="stat-value tokens" id="s-agents">0</span></div>
+      <div class="stat"><span class="stat-label">MCP Calls</span><span class="stat-value mcps" id="s-mcps">0</span></div>
+      <div class="stat"><span class="stat-label">Total Duration</span><span class="stat-value" id="s-duration">0s</span></div>
     </div>
-    <div class="detail-body" id="detail-body"></div>
+
+    <div class="main">
+      <div class="table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Date / Time</th>
+              <th>Prompt</th>
+              <th>AI Credits</th>
+              <th>Duration</th>
+              <th>Cached Tokens</th>
+              <th>Written Tokens</th>
+              <th>Reasoning Tokens</th>
+              <th>Skills</th>
+              <th>Agents</th>
+              <th>MCPs</th>
+            </tr>
+          </thead>
+          <tbody id="trace-tbody">
+            <tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="detail-panel" id="detail-panel">
+        <div class="detail-header">
+          <h3 id="detail-title">Trace Detail</h3>
+          <button class="close-btn" onclick="closeDetail()">×</button>
+        </div>
+        <div class="detail-body" id="detail-body"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -156,29 +375,167 @@
 </div>
 
 <script>
+  // ── Routing ────────────────────────────────────
+  const pages = ['dashboard', 'live'];
   const socket = io();
   let traces = {};
   let summary = null;
   let selectedId = null;
+  let currentProjectId = null;
+  let liveSocket = null;
+  let dashboardRefreshPending = false;
 
-  socket.on('init', (data) => {
-    data.traces.forEach(t => traces[t.id] = t);
-    summary = data.summary;
-    render();
+  // Main socket listens for all trace events — refreshes dashboard in real-time
+  // (regardless of active page, so it's fresh when you switch back)
+  socket.on('trace:update', () => scheduleDashboardRefresh());
+  socket.on('trace:done', () => scheduleDashboardRefresh());
+
+  function navigateTo(page, projectId) {
+    if (!pages.includes(page)) page = 'dashboard';
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+    const pageEl = document.getElementById('page-' + page);
+    const linkEl = document.querySelector(`[data-page="${page}"]`);
+    if (pageEl) pageEl.classList.add('active');
+    if (linkEl) linkEl.classList.add('active');
+
+    if (page === 'dashboard') {
+      loadDashboard();
+    } else if (page === 'live') {
+      connectLiveSocket(projectId);
+    }
+  }
+
+  function getHashPage() {
+    const hash = location.hash.replace('#/', '').split('?')[0];
+    return pages.includes(hash) ? hash : 'dashboard';
+  }
+
+  function getHashProject() {
+    const match = location.hash.match(/project=([^&]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function connectLiveSocket(projectId) {
+    // Disconnect existing live socket
+    if (liveSocket) { liveSocket.disconnect(); liveSocket = null; }
+    currentProjectId = projectId || null;
+
+    // Reset state
+    traces = {};
+    summary = null;
+    selectedId = null;
+
+    // Connect with project filter
+    const query = currentProjectId ? { projectId: currentProjectId } : {};
+    liveSocket = io({ query });
+    liveSocket.on('init', (data) => {
+      data.traces.forEach(t => traces[t.id] = t);
+      summary = data.summary;
+      render();
+    });
+    liveSocket.on('trace:update', (t) => {
+      traces[t.id] = t;
+      updateSummaryFromTraces();
+      render();
+      if (selectedId === t.id) renderDetail(t);
+    });
+    liveSocket.on('trace:done', (t) => {
+      traces[t.id] = t;
+      updateSummaryFromTraces();
+      render();
+    });
+
+    // Update session badge
+    const badge = document.getElementById('session-badge');
+    if (badge) badge.textContent = currentProjectId ? `Project: ${currentProjectId.replace('project:', '')}` : 'Session: —';
+  }
+
+  window.addEventListener('hashchange', () => {
+    navigateTo(getHashPage(), getHashProject());
   });
 
-  socket.on('trace:update', (t) => {
-    traces[t.id] = t;
-    updateSummaryFromTraces();
-    render();
-    if (selectedId === t.id) renderDetail(t);
-  });
+  // ── Dashboard ──────────────────────────────────
+  function scheduleDashboardRefresh() {
+    if (dashboardRefreshPending) return;
+    dashboardRefreshPending = true;
+    setTimeout(() => { dashboardRefreshPending = false; loadDashboard(); }, 500);
+  }
 
-  socket.on('trace:done', (t) => {
-    traces[t.id] = t;
-    updateSummaryFromTraces();
-    render();
-  });
+  async function loadDashboard() {
+    try {
+      const res = await fetch('/api/dashboard');
+      const data = await res.json();
+      renderDashboard(data);
+    } catch (e) {
+      console.error('Dashboard load failed:', e);
+    }
+  }
+
+  function renderDashboard(data) {
+    const totalsEl = document.getElementById('dash-totals');
+    totalsEl.innerHTML = `
+      <div class="dash-total-card">
+        <div class="dash-total-label">Projects</div>
+        <div class="dash-total-value">${data.totals.projects}</div>
+      </div>
+      <div class="dash-total-card">
+        <div class="dash-total-label">Sessions</div>
+        <div class="dash-total-value sessions">${data.totals.sessions}</div>
+      </div>
+      <div class="dash-total-card">
+        <div class="dash-total-label">Total Tokens</div>
+        <div class="dash-total-value tokens">${data.totals.tokens.toLocaleString()}</div>
+      </div>
+      <div class="dash-total-card">
+        <div class="dash-total-label">Total AI Credits</div>
+        <div class="dash-total-value credits">${fmtCredits(data.totals.credits)}</div>
+      </div>
+    `;
+
+    const projectsEl = document.getElementById('dash-projects');
+    if (!data.projects.length) {
+      projectsEl.innerHTML = `
+        <div class="dash-empty">
+          <div style="font-size:32px;margin-bottom:8px">📡</div>
+          <div style="font-size:14px;color:#e6edf3;margin-bottom:4px">No projects traced yet</div>
+          <p>Start the tracer with a project path:</p>
+          <p style="margin-top:8px"><code>copilot-tracer --project-path /path/to/repo</code></p>
+        </div>`;
+      return;
+    }
+
+    projectsEl.innerHTML = data.projects.map(p => {
+      const shortPath = p.localPath
+        ? p.localPath.replace(/^\/Users\/[^/]+/, '~')
+        : (p.repoUrl || p.path).replace(/^https?:\/\/github\.com\//, 'gh:').replace(/\.git$/, '');
+      const lastActive = p.lastActiveAt ? fmtDateTime(p.lastActiveAt) : '—';
+      const repoBadge = p.repoUrl ? `<div style="margin-top:6px;font-size:10px;color:#58a6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(p.repoUrl)}">${escHtml(p.repoUrl.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, ''))}</div>` : '';
+      return `
+        <div class="dash-project-card" onclick="location.hash='#/live?project=${encodeURIComponent(p.id)}'">
+          <div class="dash-project-path" title="${escHtml(p.localPath || p.repoUrl || p.path)}">${escHtml(shortPath)}</div>
+          ${repoBadge}
+          <div class="dash-project-stats">
+            <div class="dash-project-stat">
+              <span class="dash-project-stat-label">Sessions</span>
+              <span class="dash-project-stat-value">${p.sessionCount}</span>
+            </div>
+            <div class="dash-project-stat">
+              <span class="dash-project-stat-label">Tokens</span>
+              <span class="dash-project-stat-value tokens">${p.totalTokens.toLocaleString()}</span>
+            </div>
+            <div class="dash-project-stat">
+              <span class="dash-project-stat-label">AI Credits</span>
+              <span class="dash-project-stat-value credits">${fmtCredits(p.totalCredits)}</span>
+            </div>
+          </div>
+          <div class="dash-project-last-active">Last active: ${lastActive}</div>
+        </div>`;
+    }).join('');
+  }
+
+  // ── Live Tracer (Socket.io) ────────────────────
+  // Connection is managed by connectLiveSocket()
 
   function updateSummaryFromTraces() {
     const arr = Object.values(traces);
@@ -212,7 +569,6 @@
   }
 
   function render() {
-    // Stats bar
     if (summary) {
       document.getElementById('s-prompts').textContent = summary.totalEntries;
       document.getElementById('s-credits').textContent = fmtCredits(summary.totalCredits);
@@ -265,12 +621,15 @@
   }
 
   function renderDetail(t) {
+    refineOpen = false;
     document.getElementById('detail-title').textContent = truncate(t.prompt || 'Trace Detail', 50);
     const body = document.getElementById('detail-body');
     body.innerHTML = `
       <div class="detail-section">
         <h4>Prompt</h4>
         <div class="detail-box prompt">${escHtml(t.prompt||'')}</div>
+        <button class="refine-btn" onclick="toggleRefine(${JSON.stringify(t.prompt||'').replace(/</g,'\\u003c').replace(/"/g,'&quot;')})">✨ Refine Prompt</button>
+        <div class="refine-panel" id="refine-panel"></div>
       </div>
       ${t.reasoning ? `
       <div class="detail-section">
@@ -402,6 +761,16 @@ Duration:         ${fmtDuration(t.durationMs)}
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+
+  // ── Init ───────────────────────────────────────
+  const initPage = getHashPage();
+  const initProject = getHashProject();
+  if (initPage === 'live') {
+    connectLiveSocket(initProject);
+  } else {
+    loadDashboard();
+  }
+  navigateTo(initPage, initProject);
 </script>
 </body>
 </html>

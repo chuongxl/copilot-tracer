@@ -49,3 +49,27 @@ export interface SessionSummary {
   totalAgentCalls: number;
   totalMcpCalls: number;
 }
+
+export interface Project {
+  id: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardProject {
+  id: string;
+  path: string;
+  repoUrl: string | null;
+  localPath: string | null;
+  sessionCount: number;
+  totalTokens: number;
+  totalCredits: number;
+  lastActiveAt: string | null;
+  lastSession: { id: string; tokens: number; credits: number } | null;
+}
+
+export interface DashboardData {
+  projects: DashboardProject[];
+  totals: { projects: number; sessions: number; tokens: number; credits: number };
+}
