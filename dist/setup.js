@@ -22,6 +22,26 @@ function otelEnvBlock(port) {
         `export ${OTEL_ENDPOINT_KEY}=http://localhost:${port}`,
         `export ${OTEL_CONTENT_KEY}=true`,
         `export ${OTEL_ENABLED_KEY}=true`,
+        ``,
+        `# Tag every copilot prompt with the terminal folder it ran from, so the`,
+        `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
+        `# so we inject it via OTEL_RESOURCE_ATTRIBUTES (percent-encoded).`,
+        `copilot() {`,
+        `  local _wd`,
+        `  if command -v python3 >/dev/null 2>&1; then`,
+        `    _wd="$(pwd | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe="/"))')"`,
+        `  else`,
+        `    _wd="$(pwd)"`,
+        `  fi`,
+        `  if [ -n "\${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then`,
+        `    # Drop any stale working_dir entry, then append the current folder`,
+        `    OTEL_RESOURCE_ATTRIBUTES="$(printf '%s' "\$OTEL_RESOURCE_ATTRIBUTES" | sed -E 's/(^|,)github\.copilot\.working_dir=[^,]*/\\1/g; s/^,//')"`,
+        `    [ -z "\$OTEL_RESOURCE_ATTRIBUTES" ] || OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES},"`,
+        `  fi`,
+        `  OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES}github.copilot.working_dir=\${_wd}"`,
+        `  export OTEL_RESOURCE_ATTRIBUTES`,
+        `  command copilot "\$@"`,
+        `}`,
         `# <<< copilot-tracer <<<`,
     ].join('\n');
 }
@@ -130,7 +150,7 @@ function patchVSCodeSettings(settingsPath, port) {
     return { action: wasSet ? 'updated' : 'added' };
 }
 // ── Main setup ────────────────────────────────────────────────────────────────
-export function runSetup(port) {
+export function runSetup(port, silent = false) {
     const CHECK = '✅';
     const WARN = '⚠️ ';
     const INFO = '📍';
@@ -174,11 +194,12 @@ export function runSetup(port) {
         if (result.action === 'added') {
             console.log(`\n${CHECK} Shell profile patched: ${label}`);
             console.log(`   ${ARROW} Added OTEL env vars (endpoint, content capture)`);
+            console.log(`   ${ARROW} Added copilot() wrapper — tags each prompt with the terminal folder`);
             console.log(`   ${ARROW} Run: source ${profilePath}`);
         }
         else if (result.action === 'updated') {
             console.log(`\n${CHECK} Shell profile updated: ${label}`);
-            console.log(`   ${ARROW} Updated port to ${port}`);
+            console.log(`   ${ARROW} Updated port to ${port} + copilot() wrapper`);
             console.log(`   ${ARROW} Run: source ${profilePath}`);
         }
         else {
@@ -211,14 +232,16 @@ export function runSetup(port) {
     process.env[OTEL_CONTENT_KEY] = 'true';
     process.env[OTEL_ENABLED_KEY] = 'true';
     // 6. Summary
-    const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
-    console.log('\n────────────────────────────────────────────────');
-    console.log('  One manual step required:\n');
-    console.log(`  source ~/${profileBase}`);
-    console.log(`  (opens a new terminal already? — env is already active there)`);
-    if (vscode.found)
-        console.log('\n  Restart VS Code once to pick up the new terminal env.');
-    console.log('\n  ✨ Starting tracer web UI now...');
-    console.log(`  Open: http://localhost:${port}/`);
-    console.log('────────────────────────────────────────────────\n');
+    if (!silent) {
+        const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
+        console.log('\n────────────────────────────────────────────────');
+        console.log('  One manual step required:\n');
+        console.log(`  source ~/${profileBase}`);
+        console.log(`  (opens a new terminal already? — env is already active there)`);
+        if (vscode.found)
+            console.log('\n  Restart VS Code once to pick up the new terminal env.');
+        console.log('\n  ✨ Starting tracer web UI now...');
+        console.log(`  Open: http://localhost:${port}/`);
+        console.log('────────────────────────────────────────────────\n');
+    }
 }

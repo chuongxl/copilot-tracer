@@ -14,7 +14,7 @@
  *   chat <model> span attrs: same as above
  *   User message event: github.copilot.user.message
  */
-import { upsertTrace, createSession, deleteTrace } from './db.js';
+import { upsertTrace, createSession, deleteTrace, ensureProject, ensureProjectByRepo } from './db.js';
 import { traceEvents } from './proxy.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs, key) {
@@ -37,20 +37,35 @@ function nanoToIso(nano) {
     return new Date(nanoToMs(nano)).toISOString();
 }
 const inFlight = new Map(); // traceId → InFlight
-// Sessions we've created in DB (avoid duplicate createSession calls)
-const knownSessions = new Set();
-function ensureSession(sessionId) {
-    if (!knownSessions.has(sessionId)) {
-        createSession(sessionId);
-        knownSessions.add(sessionId);
+// Sessions are created lazily. Always upsert so project_id gets backfilled
+// when the session was created earlier without a project.
+function ensureSession(sessionId, projectId) {
+    createSession(sessionId, projectId);
+}
+// ── Project resolution ────────────────────────────────────────────────────────
+// Precedence: repo URL > working dir > default (CLI) project.
+// If none match, the session keeps no project (traces still appear on live page).
+function resolveProjectId(repoUrl, workingDir, defaultProjectId) {
+    if (repoUrl)
+        return ensureProjectByRepo(String(repoUrl));
+    if (workingDir)
+        return ensureProject(workingDir);
+    return defaultProjectId;
+}
+function detectWorkingDir(attrs) {
+    for (const key of ['process.working_directory', 'github.copilot.working_dir']) {
+        const v = getAttr(attrs, key);
+        if (v && String(v).trim())
+            return String(v).trim();
     }
+    return undefined;
 }
 // ── Process one batch of spans ────────────────────────────────────────────────
 // Track standalone chat entries so invoke_agent can replace them (multiple chat spans per traceId)
 const pendingChatIds = new Map(); // `chat:${traceId}` → list of entryIds
 // Buffer tool calls that arrive before invoke_agent
 const pendingToolCalls = new Map(); // traceId → tool calls
-function processSpans(spans, sessionId) {
+function processSpans(spans, sessionId, projectId, workingDir) {
     for (const span of spans) {
         // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
         if (process.env.COPILOT_TRACER_DEBUG === '1') {
@@ -65,6 +80,9 @@ function processSpans(spans, sessionId) {
             const startMs = nanoToMs(span.startTimeUnixNano);
             const endMs = nanoToMs(span.endTimeUnixNano);
             const durationMs = endMs - startMs;
+            // Extract repo URL for auto project detection
+            const repoUrl = getAttr(attrs, 'github.copilot.git.repository');
+            const resolvedProjectId = resolveProjectId(repoUrl, workingDir, projectId);
             // Extract prompt from gen_ai.input.messages (real attr name from copilot)
             let promptText = '';
             let responseText = '';
@@ -213,7 +231,7 @@ function processSpans(spans, sessionId) {
                 inf.entry.mcpCount = mcps;
                 pendingToolCalls.delete(traceId);
             }
-            ensureSession(sessionId);
+            ensureSession(sessionId, resolvedProjectId);
             upsertTrace(entry);
             traceEvents.emit('trace:update', entry);
             traceEvents.emit('trace:done', entry);
@@ -276,7 +294,7 @@ function processSpans(spans, sessionId) {
                     skillCount: 0, agentCount: 0, mcpCount: 0,
                     status: 'done',
                 };
-                ensureSession(sessionId);
+                ensureSession(sessionId, resolveProjectId(getAttr(attrs, 'github.copilot.git.repository'), workingDir, projectId));
                 upsertTrace(entry);
                 const chatKey = `chat:${traceId}`;
                 const existing = pendingChatIds.get(chatKey) ?? [];
@@ -383,7 +401,7 @@ function detectToolType(name) {
     return 'builtin';
 }
 // ── Register OTLP HTTP routes on the Express app ──────────────────────────────
-export function registerOtlpRoutes(app, defaultSessionId) {
+export function registerOtlpRoutes(app, defaultSessionId, projectId) {
     // OTLP traces — copilot sends JSON (http/json protocol)
     // body already parsed by express.json() middleware registered before this call
     app.post('/v1/traces', (req, res) => {
@@ -396,8 +414,9 @@ export function registerOtlpRoutes(app, defaultSessionId) {
                     ?? getAttr(resAttrs, 'session.id')
                     ?? getAttr(resAttrs, 'github.copilot.conversation_id');
                 const sessionId = String(sessionFromOtel ?? defaultSessionId);
+                const workingDir = detectWorkingDir(resAttrs);
                 for (const ss of rs.scopeSpans ?? []) {
-                    processSpans(ss.spans ?? [], sessionId);
+                    processSpans(ss.spans ?? [], sessionId, projectId, workingDir);
                 }
             }
             res.status(200).json({ partialSuccess: {} });
