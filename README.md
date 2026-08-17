@@ -121,6 +121,7 @@ Open http://localhost:4747 after starting the daemon.
 - **Summary cards** — total projects, sessions, tokens, credits
 - **Project cards** — each project shows path, session count, tokens, credits, last active
 - **Click a project** → opens live tracer filtered to that project
+<img width="737" height="410" alt="image" src="https://github.com/user-attachments/assets/dc20653b-8774-46b3-9a42-6e7bb934aded" />
 
 ---
 
@@ -137,6 +138,10 @@ Real-time trace table for a specific project.
 - Click Reasoning → full reasoning text
 - Click Skills / Agents / MCPs → filtered call list
 - Real-time updates via Socket.io
+
+<img width="1504" height="742" alt="image" src="https://github.com/user-attachments/assets/f334108f-c587-4228-8120-7dac2f85f90b" />
+
+<img width="1061" height="696" alt="image" src="https://github.com/user-attachments/assets/1555d5a2-dbca-4f1d-b102-3d2865dcee68" />
 
 ---
 
