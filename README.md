@@ -1,6 +1,6 @@
 # copilot-tracer
 
-Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI** and **VS Code Copilot extension**.
+Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, **Claude Code**, and **VS Code Copilot extension**.
 
 Captures every prompt, response, token usage, AI credits, tool calls, and duration — all in one place. Runs as a background daemon that collects data from all your projects automatically. Includes a web dashboard with project overview and per-project live tracing.
 
@@ -11,7 +11,7 @@ Captures every prompt, response, token usage, AI credits, tool calls, and durati
 - **Daemon mode** — install once, run forever. Collects traces from all projects automatically
 - **Auto project detection** — detects project from `github.copilot.git.repository` in OTLP spans
 - **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set env vars, done.
-- **Works everywhere** — captures both Copilot CLI and VS Code Copilot Chat
+- **Works everywhere** — captures GitHub Copilot CLI, Claude Code, and VS Code Copilot Chat
 - **Dashboard** — overview of all projects with token usage, credits, and session counts
 - **Live tracer** — real-time trace table per project with detail panel
 - **Prompt refinement** — rewrites prompts with stronger instructions and less noise
@@ -31,7 +31,8 @@ This will:
 1. Detect your Copilot CLI and VS Code installation
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
-4. Start the daemon on port 4747
+4. Enable Claude Code OTLP logs/events and enhanced beta traces
+5. Start the daemon on port 4747
 
 Then apply env vars in your current shell:
 
@@ -39,7 +40,9 @@ Then apply env vars in your current shell:
 source ~/.zshrc
 ```
 
-Restart VS Code once. After that, the daemon collects traces from all your Copilot sessions automatically.
+Restart VS Code once. After that, the daemon collects traces from all your Copilot
+and Claude Code sessions automatically. Claude Code content flags are enabled by
+setup so prompts and responses can be displayed in the local dashboard.
 
 Open **http://localhost:4747** to see the dashboard.
 
@@ -51,20 +54,20 @@ Open **http://localhost:4747** to see the dashboard.
 ┌─────────────────────────────────────────────────────────┐
 │  copilot-tracer --daemon (runs once, stays running)      │
 │                                                          │
-│  OTLP Receiver ← Copilot CLI + VS Code                   │
+│  OTLP Receiver ← Copilot CLI + Claude Code + VS Code                   │
 │  (auto-detects project from github.copilot.git.repository)│
 │                                                          │
 │  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
 └─────────────────────────────────────────────────────────┘
 
-Copilot CLI / VS Code Copilot Chat
+Copilot CLI / Claude Code / VS Code Copilot Chat
          │
          │  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
          ↓
-   POST /v1/traces (OpenTelemetry OTLP JSON)
+   POST /v1/traces and /v1/logs (OpenTelemetry OTLP JSON)
          │
          ↓
-   copilot-tracer parses spans → tokens, credits, tool calls
+   copilot-tracer parses spans and events → tokens, credits, tool calls
          │
          ↓
    SQLite DB (~/.copilot-tracer/traces.db)
@@ -178,7 +181,20 @@ Add to `~/.zshrc`:
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
 export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 export COPILOT_OTEL_ENABLED=true
+
+# Claude Code telemetry
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_LOG_USER_PROMPTS=1
+export OTEL_LOG_ASSISTANT_RESPONSES=1
 ```
+
+Claude Code exports standard OTLP logs/events and optional beta traces. See
+[Anthropic's monitoring documentation](https://code.claude.com/docs/en/monitoring-usage)
+for protocol and content controls.
 
 For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 

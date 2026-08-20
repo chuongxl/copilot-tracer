@@ -1,5 +1,5 @@
 /**
- * copilot-tracer setup — auto-detect copilot CLI + VS Code and inject OTLP env config
+ * copilot-tracer setup — auto-detect Copilot/VS Code and inject OTLP env config
  *
  * What it does:
  *  1. Detect copilot CLI (which copilot)
@@ -18,6 +18,13 @@ import os from 'os';
 const OTEL_ENDPOINT_KEY   = 'OTEL_EXPORTER_OTLP_ENDPOINT';
 const OTEL_CONTENT_KEY    = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT';
 const OTEL_ENABLED_KEY    = 'COPILOT_OTEL_ENABLED';
+const CLAUDE_TELEMETRY_KEY = 'CLAUDE_CODE_ENABLE_TELEMETRY';
+const CLAUDE_TRACES_KEY = 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA';
+const OTEL_LOGS_EXPORTER_KEY = 'OTEL_LOGS_EXPORTER';
+const OTEL_TRACES_EXPORTER_KEY = 'OTEL_TRACES_EXPORTER';
+const OTEL_PROTOCOL_KEY = 'OTEL_EXPORTER_OTLP_PROTOCOL';
+const OTEL_LOG_PROMPTS_KEY = 'OTEL_LOG_USER_PROMPTS';
+const OTEL_LOG_RESPONSES_KEY = 'OTEL_LOG_ASSISTANT_RESPONSES';
 
 function otelEnvBlock(port: number): string {
   return [
@@ -25,6 +32,13 @@ function otelEnvBlock(port: number): string {
     `export ${OTEL_ENDPOINT_KEY}=http://localhost:${port}`,
     `export ${OTEL_CONTENT_KEY}=true`,
     `export ${OTEL_ENABLED_KEY}=true`,
+    `export ${CLAUDE_TELEMETRY_KEY}=1`,
+    `export ${CLAUDE_TRACES_KEY}=1`,
+    `export ${OTEL_LOGS_EXPORTER_KEY}=otlp`,
+    `export ${OTEL_TRACES_EXPORTER_KEY}=otlp`,
+    `export ${OTEL_PROTOCOL_KEY}=http/json`,
+    `export ${OTEL_LOG_PROMPTS_KEY}=1`,
+    `export ${OTEL_LOG_RESPONSES_KEY}=1`,
     ``,
     `# Tag every copilot prompt with the terminal folder it ran from, so the`,
     `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
@@ -45,6 +59,22 @@ function otelEnvBlock(port: number): string {
     `  export OTEL_RESOURCE_ATTRIBUTES`,
     `  command copilot "\$@"`,
     `}`,
+    ``,
+    `claude() {`,
+    `  local _wd`,
+    `  if command -v python3 >/dev/null 2>&1; then`,
+    `    _wd="$(pwd | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe="/"))')"`,
+    `  else`,
+    `    _wd="$(pwd)"`,
+    `  fi`,
+    `  if [ -n "\${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then`,
+    `    OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES},claude_code.working_dir=\${_wd}"`,
+    `  else`,
+    `    OTEL_RESOURCE_ATTRIBUTES="claude_code.working_dir=\${_wd}"`,
+    `  fi`,
+    `  export OTEL_RESOURCE_ATTRIBUTES`,
+    `  command claude "\$@"`,
+    `}`,
     `# <<< copilot-tracer <<<`,
   ].join('\n');
 }
@@ -54,6 +84,13 @@ function vscodeEnvBlock(port: number): Record<string, string> {
     [OTEL_ENDPOINT_KEY]: `http://localhost:${port}`,
     [OTEL_CONTENT_KEY]: 'true',
     [OTEL_ENABLED_KEY]: 'true',
+    [CLAUDE_TELEMETRY_KEY]: '1',
+    [CLAUDE_TRACES_KEY]: '1',
+    [OTEL_LOGS_EXPORTER_KEY]: 'otlp',
+    [OTEL_TRACES_EXPORTER_KEY]: 'otlp',
+    [OTEL_PROTOCOL_KEY]: 'http/json',
+    [OTEL_LOG_PROMPTS_KEY]: '1',
+    [OTEL_LOG_RESPONSES_KEY]: '1',
   };
 }
 
@@ -214,12 +251,12 @@ export function runSetup(port: number, silent = false): void {
     const label = path.basename(profilePath);
     if (result.action === 'added') {
       console.log(`\n${CHECK} Shell profile patched: ${label}`);
-      console.log(`   ${ARROW} Added OTEL env vars (endpoint, content capture)`);
+      console.log(`   ${ARROW} Added Copilot + Claude Code OTLP env vars`);
       console.log(`   ${ARROW} Added copilot() wrapper — tags each prompt with the terminal folder`);
       console.log(`   ${ARROW} Run: source ${profilePath}`);
     } else if (result.action === 'updated') {
       console.log(`\n${CHECK} Shell profile updated: ${label}`);
-      console.log(`   ${ARROW} Updated port to ${port} + copilot() wrapper`);
+      console.log(`   ${ARROW} Updated port to ${port} + Claude Code/Copilot OTLP config`);
       console.log(`   ${ARROW} Run: source ${profilePath}`);
     } else {
       console.log(`\n${CHECK} Shell profile: already configured (${label})`);
@@ -249,6 +286,13 @@ export function runSetup(port: number, silent = false): void {
   process.env[OTEL_ENDPOINT_KEY]  = `http://localhost:${port}`;
   process.env[OTEL_CONTENT_KEY]   = 'true';
   process.env[OTEL_ENABLED_KEY]   = 'true';
+  process.env[CLAUDE_TELEMETRY_KEY] = '1';
+  process.env[CLAUDE_TRACES_KEY] = '1';
+  process.env[OTEL_LOGS_EXPORTER_KEY] = 'otlp';
+  process.env[OTEL_TRACES_EXPORTER_KEY] = 'otlp';
+  process.env[OTEL_PROTOCOL_KEY] = 'http/json';
+  process.env[OTEL_LOG_PROMPTS_KEY] = '1';
+  process.env[OTEL_LOG_RESPONSES_KEY] = '1';
 
   // 6. Summary
   if (!silent) {
