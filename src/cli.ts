@@ -11,6 +11,7 @@ import { renderConsoleTable } from './consoleUi.js';
 import { startWebServer } from './webServer.js';
 import { runSetup } from './setup.js';
 import open from 'open';
+import os from 'os';
 
 program
   .name('copilot-tracer')
@@ -33,7 +34,36 @@ const port = parseInt(opts.port);
 // Handle --setup: patch env files, apply to current process, then fall through to start web UI
 if (opts.setup) {
   runSetup(port, opts.daemon);
-  if (!opts.daemon) {
+
+  if (opts.daemon) {
+    // Relaunch as a detached background daemon so the terminal doesn't need to stay open.
+    const dir = path.join(os.homedir(), '.copilot-tracer');
+    fs.mkdirSync(dir, { recursive: true });
+    const pidFile = path.join(dir, 'daemon.pid');
+
+    const existingPid = fs.existsSync(pidFile) ? parseInt(fs.readFileSync(pidFile, 'utf8'), 10) : NaN;
+    const alreadyRunning = !isNaN(existingPid) && (() => {
+      try { process.kill(existingPid, 0); return true; } catch { return false; }
+    })();
+
+    if (alreadyRunning) {
+      console.log(`\n  🤖 Daemon already running (pid ${existingPid})`);
+      console.log(`  🌐 Dashboard: http://localhost:${port}/\n`);
+    } else {
+      const logFile = fs.openSync(path.join(dir, 'daemon.log'), 'a');
+      const child = spawn(process.execPath, [process.argv[1], '--daemon', '--port', String(port)], {
+        detached: true,
+        stdio: ['ignore', logFile, logFile],
+      });
+      child.unref();
+      fs.writeFileSync(pidFile, String(child.pid));
+      console.log(`\n  🤖 Daemon started in background (pid ${child.pid})`);
+      console.log(`  🌐 Dashboard: http://localhost:${port}/`);
+      console.log(`  📄 Logs: ${path.join(dir, 'daemon.log')}`);
+      console.log(`  Stop it with: kill ${child.pid}\n`);
+    }
+    process.exit(0);
+  } else {
     opts.proxy  = false;
     opts.ui     = 'web';
   }
