@@ -52,6 +52,24 @@ interface OtlpTracesPayload {
   resourceSpans?: OtlpResourceSpans[];
 }
 
+interface OtlpLogRecord {
+  timeUnixNano?: string;
+  observedTimeUnixNano?: string;
+  body?: { stringValue?: string; intValue?: number | string; doubleValue?: number; boolValue?: boolean };
+  attributes?: OtlpKeyValue[];
+  traceId?: string;
+  spanId?: string;
+}
+
+interface OtlpResourceLogs {
+  resource?: { attributes?: OtlpKeyValue[] };
+  scopeLogs?: Array<{ logRecords?: OtlpLogRecord[] }>;
+}
+
+interface OtlpLogsPayload {
+  resourceLogs?: OtlpResourceLogs[];
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs: OtlpKeyValue[] | undefined, key: string): string | number | undefined {
   const kv = attrs?.find(a => a.key === key);
@@ -69,6 +87,23 @@ function nanoToMs(nano: string | number): number {
 
 function nanoToIso(nano: string | number): string {
   return new Date(nanoToMs(nano)).toISOString();
+}
+
+function getStringAttr(attrs: OtlpKeyValue[] | undefined, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = getAttr(attrs, key);
+    if (value !== undefined && String(value).trim()) return String(value);
+  }
+  return undefined;
+}
+
+function getBodyText(body: OtlpLogRecord['body']): string | undefined {
+  if (!body) return undefined;
+  if (body.stringValue !== undefined) return body.stringValue;
+  if (body.intValue !== undefined) return String(body.intValue);
+  if (body.doubleValue !== undefined) return String(body.doubleValue);
+  if (body.boolValue !== undefined) return String(body.boolValue);
+  return undefined;
 }
 
 // ── State: in-flight agent invocations keyed by traceId ──────────────────────
@@ -96,7 +131,7 @@ function resolveProjectId(repoUrl: string | number | undefined, workingDir: stri
 }
 
 function detectWorkingDir(attrs: OtlpKeyValue[] | undefined): string | undefined {
-  for (const key of ['process.working_directory', 'github.copilot.working_dir']) {
+  for (const key of ['process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir']) {
     const v = getAttr(attrs, key);
     if (v && String(v).trim()) return String(v).trim();
   }
@@ -108,6 +143,129 @@ function detectWorkingDir(attrs: OtlpKeyValue[] | undefined): string | undefined
 const pendingChatIds = new Map<string, string[]>(); // `chat:${traceId}` → list of entryIds
 // Buffer tool calls that arrive before invoke_agent
 const pendingToolCalls = new Map<string, ToolCall[]>(); // traceId → tool calls
+const claudePromptEntries = new Map<string, TraceEntry>(); // prompt.id → trace entry
+const claudeInteractionEntries = new Map<string, TraceEntry>(); // traceId → interaction entry
+const CLAUDE_STATE_LIMIT = 1000;
+
+function rememberClaudeEntry(map: Map<string, TraceEntry>, key: string, entry: TraceEntry) {
+  map.set(key, entry);
+  if (map.size > CLAUDE_STATE_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest) map.delete(oldest);
+  }
+}
+
+function claudeEventId(record: OtlpLogRecord, attrs: OtlpKeyValue[], eventName: string): string {
+  const messageId = getStringAttr(attrs, 'message.uuid', 'tool_use_id');
+  const promptId = getStringAttr(attrs, 'prompt.id');
+  return `claude:${messageId ?? promptId ?? record.traceId ?? randomUUID()}:${eventName}`;
+}
+
+function processClaudeLogRecord(
+  record: OtlpLogRecord,
+  resourceAttrs: OtlpKeyValue[],
+  sessionId: string,
+  projectId?: string,
+  workingDir?: string,
+) {
+  const attrs = record.attributes ?? [];
+  const eventName = getStringAttr(attrs, 'event.name') ?? getBodyText(record.body);
+  if (!eventName || !eventName.startsWith('claude_code.')) return;
+
+  const eventTime = getStringAttr(attrs, 'event.timestamp');
+  const dateTime = eventTime ?? (record.timeUnixNano ? nanoToIso(record.timeUnixNano) : new Date().toISOString());
+  const promptId = getStringAttr(attrs, 'prompt.id');
+  const resolvedProjectId = resolveProjectId(
+    getStringAttr(resourceAttrs, 'github.copilot.git.repository', 'vcs.repository.url'),
+    getStringAttr(attrs, 'process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir') ?? workingDir,
+    projectId,
+  );
+  const eventSessionId = getStringAttr(attrs, 'session.id') ?? sessionId;
+
+  if (eventName === 'claude_code.user_prompt') {
+    const entry: TraceEntry = {
+      id: claudeEventId(record, attrs, 'prompt'),
+      sessionId: eventSessionId,
+      dateTime,
+      prompt: getStringAttr(attrs, 'prompt') ?? '[Claude Code prompt]',
+      tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+      aiCredits: 0,
+      durationMs: 0,
+      toolCalls: [],
+      skillCount: 0,
+      agentCount: 0,
+      mcpCount: 0,
+      status: 'running',
+    };
+    if (promptId) rememberClaudeEntry(claudePromptEntries, promptId, entry);
+    ensureSession(eventSessionId, resolvedProjectId);
+    upsertTrace(entry);
+    traceEvents.emit('trace:update', entry);
+    return;
+  }
+
+  if (eventName === 'claude_code.assistant_response') {
+    const existingEntry = promptId ? claudePromptEntries.get(promptId) : undefined;
+    const entry: TraceEntry = existingEntry ?? {
+      id: claudeEventId(record, attrs, 'response'),
+      sessionId: eventSessionId,
+      dateTime,
+      prompt: '[Claude Code response]',
+      tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+      aiCredits: 0,
+      durationMs: 0,
+      toolCalls: [],
+      skillCount: 0,
+      agentCount: 0,
+      mcpCount: 0,
+      status: 'running',
+    };
+    entry.response = getStringAttr(attrs, 'response');
+    entry.status = 'done';
+    entry.durationMs = Number(getStringAttr(attrs, 'duration_ms') ?? 0);
+    ensureSession(eventSessionId, resolvedProjectId);
+    upsertTrace(entry);
+    traceEvents.emit('trace:update', entry);
+    traceEvents.emit('trace:done', entry);
+    return;
+  }
+
+  if (eventName === 'claude_code.tool_result') {
+    const entry = promptId ? claudePromptEntries.get(promptId) : undefined;
+    if (!entry) return;
+    const toolName = getStringAttr(attrs, 'tool_name') ?? 'Claude Code tool';
+    const toolId = getStringAttr(attrs, 'tool_use_id') ?? randomUUID();
+    if (entry.toolCalls.some(call => call.id === toolId)) return;
+    entry.toolCalls.push({
+      id: toolId,
+      name: toolName,
+      type: detectToolType(toolName),
+      input: {},
+      startedAt: Date.parse(dateTime),
+      endedAt: Date.parse(dateTime),
+      durationMs: Number(getStringAttr(attrs, 'duration_ms') ?? 0),
+      error: getStringAttr(attrs, 'error'),
+    });
+    upsertTrace(entry);
+    traceEvents.emit('trace:update', entry);
+  }
+}
+
+function processClaudeLogs(payload: OtlpLogsPayload, defaultSessionId: string, projectId?: string) {
+  if (!payload || !Array.isArray(payload.resourceLogs)) {
+    throw new Error('OTLP logs payload must contain resourceLogs');
+  }
+  for (const resourceLogs of payload.resourceLogs ?? []) {
+    const resourceAttrs = resourceLogs.resource?.attributes ?? [];
+    const sessionId = getStringAttr(resourceAttrs, 'session.id') ?? defaultSessionId;
+    const workingDir = detectWorkingDir(resourceAttrs);
+    for (const scopeLogs of resourceLogs.scopeLogs ?? []) {
+      for (const record of scopeLogs.logRecords ?? []) {
+        processClaudeLogRecord(record, resourceAttrs, sessionId, projectId, workingDir);
+      }
+    }
+  }
+}
 
 function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, workingDir?: string) {
   for (const span of spans) {
@@ -119,6 +277,55 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
     const spanName = span.name;
     const traceId = span.traceId;
     const spanId = span.spanId;
+
+    if (spanName === 'claude_code.interaction') {
+      const attrs = span.attributes ?? [];
+      const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
+      const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+      const entry: TraceEntry = {
+        id: spanId,
+        sessionId: getStringAttr(attrs, 'session.id') ?? sessionId,
+        dateTime: nanoToIso(span.startTimeUnixNano),
+        prompt: getStringAttr(attrs, 'user_prompt') ?? '[Claude Code interaction]',
+        tokens: { input: inputTokens, output: outputTokens, cached: Number(getAttr(attrs, 'cache_read_tokens') ?? 0), reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
+        aiCredits: Number(getAttr(attrs, 'cost_usd') ?? 0),
+        durationMs: Number(getAttr(attrs, 'interaction.duration_ms')
+          ?? (nanoToMs(span.endTimeUnixNano) - nanoToMs(span.startTimeUnixNano))),
+        toolCalls: [],
+        skillCount: 0,
+        agentCount: 0,
+        mcpCount: 0,
+        status: (span.status?.code ?? 0) === 2 ? 'error' : 'done',
+        error: span.status?.message,
+      };
+      ensureSession(entry.sessionId, resolveProjectId(getAttr(attrs, 'vcs.repository.url'), detectWorkingDir(attrs) ?? workingDir, projectId));
+      upsertTrace(entry);
+      rememberClaudeEntry(claudeInteractionEntries, traceId, entry);
+      traceEvents.emit('trace:update', entry);
+      traceEvents.emit('trace:done', entry);
+      continue;
+    }
+
+    if (spanName === 'claude_code.llm_request') {
+      const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
+      const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+      const cachedTokens = Number(getAttr(attrs, 'cache_read_tokens') ?? 0);
+      const entry = claudeInteractionEntries.get(traceId);
+      if (entry) {
+        entry.tokens = {
+          input: entry.tokens.input + inputTokens,
+          output: entry.tokens.output + outputTokens,
+          cached: entry.tokens.cached + cachedTokens,
+          reasoning: 0,
+          written: entry.tokens.written + outputTokens,
+          total: entry.tokens.total + inputTokens + outputTokens,
+        };
+        entry.aiCredits += Number(getAttr(attrs, 'cost_usd') ?? 0);
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+      }
+      continue;
+    }
 
     // ── invoke_agent span = top-level agent turn ──────────────────────────
     if (spanName === 'invoke_agent') {
@@ -466,9 +673,18 @@ export function registerOtlpRoutes(app: Express, defaultSessionId: string, proje
     }
   });
 
-  // Metrics + logs — accept and ignore
-  app.post('/v1/metrics', (_req, res) => res.status(200).json({ partialSuccess: {} }));
-  app.post('/v1/logs',    (_req, res) => res.status(200).json({ partialSuccess: {} }));
+  app.post('/v1/logs', (req, res) => {
+    try {
+      processClaudeLogs(req.body as OtlpLogsPayload, defaultSessionId, projectId);
+      res.status(200).json({ partialSuccess: {} });
+    } catch (e) {
+      console.error('[OTLP] log parse error:', e);
+      res.status(400).json({ error: 'invalid payload' });
+    }
+  });
 
-  console.log('  📡 OTLP receiver ready on /v1/traces');
+  // Metrics remain accepted for Claude Code dashboards but are not trace entries.
+  app.post('/v1/metrics', (_req, res) => res.status(200).json({ partialSuccess: {} }));
+
+  console.log('  📡 OTLP receiver ready on /v1/traces and /v1/logs');
 }
