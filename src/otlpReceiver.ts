@@ -115,6 +115,33 @@ interface InFlight {
 
 const inFlight = new Map<string, InFlight>();  // traceId → InFlight
 
+// Anthropic API pricing per 1K tokens (USD), converted to GitHub "AI credit" units
+// (1 credit = $0.01) so aiCredits stays one unit across Copilot and Claude entries.
+// Rates are Anthropic's current published per-model prices; a model id that doesn't
+// match a specific entry falls back to its tier's (opus/sonnet/haiku) latest rate.
+const ANTHROPIC_USD_PER_1K: Record<string, { input: number; output: number }> = {
+  'claude-fable-5':    { input: 0.010, output: 0.050 },
+  'claude-mythos-5':   { input: 0.010, output: 0.050 },
+  'claude-opus-5':     { input: 0.005, output: 0.025 },
+  'claude-opus-4-8':   { input: 0.005, output: 0.025 },
+  'claude-opus-4-7':   { input: 0.005, output: 0.025 },
+  'claude-opus-4-6':   { input: 0.005, output: 0.025 },
+  'claude-sonnet-5':   { input: 0.002, output: 0.010 },
+  'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
+  'claude-haiku-4-5':  { input: 0.001, output: 0.005 },
+  'opus':              { input: 0.005, output: 0.025 },
+  'sonnet':            { input: 0.003, output: 0.015 },
+  'haiku':             { input: 0.001, output: 0.005 },
+  'default':           { input: 0.003, output: 0.015 },
+};
+
+export function calcClaudeCredits(tokens: { input: number; output: number }, model?: string): number {
+  const key = Object.keys(ANTHROPIC_USD_PER_1K).find(k => (model ?? '').toLowerCase().includes(k)) ?? 'default';
+  const rate = ANTHROPIC_USD_PER_1K[key];
+  const usd = (tokens.input / 1000) * rate.input + (tokens.output / 1000) * rate.output;
+  return usd * 100; // USD → credits (1 credit = $0.01)
+}
+
 // Sessions are created lazily. Always upsert so project_id gets backfilled
 // when the session was created earlier without a project.
 function ensureSession(sessionId: string, projectId?: string) {
@@ -145,9 +172,13 @@ const pendingChatIds = new Map<string, string[]>(); // `chat:${traceId}` → lis
 const pendingToolCalls = new Map<string, ToolCall[]>(); // traceId → tool calls
 const claudePromptEntries = new Map<string, TraceEntry>(); // prompt.id → trace entry
 const claudeInteractionEntries = new Map<string, TraceEntry>(); // traceId → interaction entry
+// Real Claude Code telemetry sends the child claude_code.llm_request span before its
+// parent claude_code.interaction span within the same batch, so buffer llm_request's
+// token/cost delta here until the interaction entry shows up to receive it.
+const pendingClaudeLlmDeltas = new Map<string, { input: number; output: number; cached: number; credits: number }>();
 const CLAUDE_STATE_LIMIT = 1000;
 
-function rememberClaudeEntry(map: Map<string, TraceEntry>, key: string, entry: TraceEntry) {
+function rememberClaudeEntry<T>(map: Map<string, T>, key: string, entry: T) {
   map.set(key, entry);
   if (map.size > CLAUDE_STATE_LIMIT) {
     const oldest = map.keys().next().value;
@@ -282,13 +313,14 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
       const attrs = span.attributes ?? [];
       const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
       const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+      const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
       const entry: TraceEntry = {
         id: spanId,
         sessionId: getStringAttr(attrs, 'session.id') ?? sessionId,
         dateTime: nanoToIso(span.startTimeUnixNano),
         prompt: getStringAttr(attrs, 'user_prompt') ?? '[Claude Code interaction]',
         tokens: { input: inputTokens, output: outputTokens, cached: Number(getAttr(attrs, 'cache_read_tokens') ?? 0), reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
-        aiCredits: Number(getAttr(attrs, 'cost_usd') ?? 0),
+        aiCredits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model),
         durationMs: Number(getAttr(attrs, 'interaction.duration_ms')
           ?? (nanoToMs(span.endTimeUnixNano) - nanoToMs(span.startTimeUnixNano))),
         toolCalls: [],
@@ -298,6 +330,20 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
         status: (span.status?.code ?? 0) === 2 ? 'error' : 'done',
         error: span.status?.message,
       };
+      // Apply any llm_request delta that arrived before this interaction span.
+      const pendingDelta = pendingClaudeLlmDeltas.get(traceId);
+      if (pendingDelta) {
+        entry.tokens = {
+          input: entry.tokens.input + pendingDelta.input,
+          output: entry.tokens.output + pendingDelta.output,
+          cached: entry.tokens.cached + pendingDelta.cached,
+          reasoning: 0,
+          written: entry.tokens.written + pendingDelta.output,
+          total: entry.tokens.total + pendingDelta.input + pendingDelta.output,
+        };
+        entry.aiCredits += pendingDelta.credits;
+        pendingClaudeLlmDeltas.delete(traceId);
+      }
       ensureSession(entry.sessionId, resolveProjectId(getAttr(attrs, 'vcs.repository.url'), detectWorkingDir(attrs) ?? workingDir, projectId));
       upsertTrace(entry);
       rememberClaudeEntry(claudeInteractionEntries, traceId, entry);
@@ -310,6 +356,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
       const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
       const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
       const cachedTokens = Number(getAttr(attrs, 'cache_read_tokens') ?? 0);
+      const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
       const entry = claudeInteractionEntries.get(traceId);
       if (entry) {
         entry.tokens = {
@@ -320,9 +367,17 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
           written: entry.tokens.written + outputTokens,
           total: entry.tokens.total + inputTokens + outputTokens,
         };
-        entry.aiCredits += Number(getAttr(attrs, 'cost_usd') ?? 0);
+        entry.aiCredits += calcClaudeCredits({ input: inputTokens, output: outputTokens }, model);
         upsertTrace(entry);
         traceEvents.emit('trace:update', entry);
+      } else {
+        // Parent claude_code.interaction span hasn't arrived yet — buffer the delta.
+        const pending = pendingClaudeLlmDeltas.get(traceId) ?? { input: 0, output: 0, cached: 0, credits: 0 };
+        pending.input += inputTokens;
+        pending.output += outputTokens;
+        pending.cached += cachedTokens;
+        pending.credits += calcClaudeCredits({ input: inputTokens, output: outputTokens }, model);
+        rememberClaudeEntry(pendingClaudeLlmDeltas, traceId, pending);
       }
       continue;
     }
