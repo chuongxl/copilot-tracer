@@ -10,7 +10,7 @@ function fmtDuration(ms) {
     return `${(ms / 1000).toFixed(1)}s`;
 }
 function fmtCredits(c) {
-    return `${c.toFixed(2)} cr | $${(c * 0.01).toFixed(4)}`;
+    return `$${(c * 0.01).toFixed(4)}`;
 }
 function statusColor(status, text) {
     if (status === 'running')
@@ -25,7 +25,7 @@ export function renderConsoleTable(entries, summary) {
         head: [
             chalk.cyan('Date / Time'),
             chalk.cyan('Prompt'),
-            chalk.cyan('AI Credits'),
+            chalk.cyan('Est Cost'),
             chalk.cyan('Duration'),
             chalk.cyan('Tokens\nCached|Written|Reason'),
             chalk.cyan('Skills'),

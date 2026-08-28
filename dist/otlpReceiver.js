@@ -14,6 +14,7 @@
  *   chat <model> span attrs: same as above
  *   User message event: github.copilot.user.message
  */
+import { randomUUID } from 'crypto';
 import { upsertTrace, createSession, deleteTrace, ensureProject, ensureProjectByRepo } from './db.js';
 import { traceEvents } from './proxy.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -36,7 +37,53 @@ function nanoToMs(nano) {
 function nanoToIso(nano) {
     return new Date(nanoToMs(nano)).toISOString();
 }
+function getStringAttr(attrs, ...keys) {
+    for (const key of keys) {
+        const value = getAttr(attrs, key);
+        if (value !== undefined && String(value).trim())
+            return String(value);
+    }
+    return undefined;
+}
+function getBodyText(body) {
+    if (!body)
+        return undefined;
+    if (body.stringValue !== undefined)
+        return body.stringValue;
+    if (body.intValue !== undefined)
+        return String(body.intValue);
+    if (body.doubleValue !== undefined)
+        return String(body.doubleValue);
+    if (body.boolValue !== undefined)
+        return String(body.boolValue);
+    return undefined;
+}
 const inFlight = new Map(); // traceId → InFlight
+// Anthropic API pricing per 1K tokens (USD), converted to GitHub "AI credit" units
+// (1 credit = $0.01) so aiCredits stays one unit across Copilot and Claude entries.
+// Rates are Anthropic's current published per-model prices; a model id that doesn't
+// match a specific entry falls back to its tier's (opus/sonnet/haiku) latest rate.
+const ANTHROPIC_USD_PER_1K = {
+    'claude-fable-5': { input: 0.010, output: 0.050 },
+    'claude-mythos-5': { input: 0.010, output: 0.050 },
+    'claude-opus-5': { input: 0.005, output: 0.025 },
+    'claude-opus-4-8': { input: 0.005, output: 0.025 },
+    'claude-opus-4-7': { input: 0.005, output: 0.025 },
+    'claude-opus-4-6': { input: 0.005, output: 0.025 },
+    'claude-sonnet-5': { input: 0.002, output: 0.010 },
+    'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
+    'claude-haiku-4-5': { input: 0.001, output: 0.005 },
+    'opus': { input: 0.005, output: 0.025 },
+    'sonnet': { input: 0.003, output: 0.015 },
+    'haiku': { input: 0.001, output: 0.005 },
+    'default': { input: 0.003, output: 0.015 },
+};
+export function calcClaudeCredits(tokens, model) {
+    const key = Object.keys(ANTHROPIC_USD_PER_1K).find(k => (model ?? '').toLowerCase().includes(k)) ?? 'default';
+    const rate = ANTHROPIC_USD_PER_1K[key];
+    const usd = (tokens.input / 1000) * rate.input + (tokens.output / 1000) * rate.output;
+    return usd * 100; // USD → credits (1 credit = $0.01)
+}
 // Sessions are created lazily. Always upsert so project_id gets backfilled
 // when the session was created earlier without a project.
 function ensureSession(sessionId, projectId) {
@@ -53,7 +100,7 @@ function resolveProjectId(repoUrl, workingDir, defaultProjectId) {
     return defaultProjectId;
 }
 function detectWorkingDir(attrs) {
-    for (const key of ['process.working_directory', 'github.copilot.working_dir']) {
+    for (const key of ['process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir']) {
         const v = getAttr(attrs, key);
         if (v && String(v).trim())
             return String(v).trim();
@@ -65,6 +112,120 @@ function detectWorkingDir(attrs) {
 const pendingChatIds = new Map(); // `chat:${traceId}` → list of entryIds
 // Buffer tool calls that arrive before invoke_agent
 const pendingToolCalls = new Map(); // traceId → tool calls
+const claudePromptEntries = new Map(); // prompt.id → trace entry
+const claudeInteractionEntries = new Map(); // traceId → interaction entry
+// Real Claude Code telemetry sends the child claude_code.llm_request span before its
+// parent claude_code.interaction span within the same batch, so buffer llm_request's
+// token/cost delta here until the interaction entry shows up to receive it.
+const pendingClaudeLlmDeltas = new Map();
+const CLAUDE_STATE_LIMIT = 1000;
+function rememberClaudeEntry(map, key, entry) {
+    map.set(key, entry);
+    if (map.size > CLAUDE_STATE_LIMIT) {
+        const oldest = map.keys().next().value;
+        if (oldest)
+            map.delete(oldest);
+    }
+}
+function claudeEventId(record, attrs, eventName) {
+    const messageId = getStringAttr(attrs, 'message.uuid', 'tool_use_id');
+    const promptId = getStringAttr(attrs, 'prompt.id');
+    return `claude:${messageId ?? promptId ?? record.traceId ?? randomUUID()}:${eventName}`;
+}
+function processClaudeLogRecord(record, resourceAttrs, sessionId, projectId, workingDir) {
+    const attrs = record.attributes ?? [];
+    const eventName = getStringAttr(attrs, 'event.name') ?? getBodyText(record.body);
+    if (!eventName || !eventName.startsWith('claude_code.'))
+        return;
+    const eventTime = getStringAttr(attrs, 'event.timestamp');
+    const dateTime = eventTime ?? (record.timeUnixNano ? nanoToIso(record.timeUnixNano) : new Date().toISOString());
+    const promptId = getStringAttr(attrs, 'prompt.id');
+    const resolvedProjectId = resolveProjectId(getStringAttr(resourceAttrs, 'github.copilot.git.repository', 'vcs.repository.url'), getStringAttr(attrs, 'process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir') ?? workingDir, projectId);
+    const eventSessionId = getStringAttr(attrs, 'session.id') ?? sessionId;
+    if (eventName === 'claude_code.user_prompt') {
+        const entry = {
+            id: claudeEventId(record, attrs, 'prompt'),
+            sessionId: eventSessionId,
+            dateTime,
+            prompt: getStringAttr(attrs, 'prompt') ?? '[Claude Code prompt]',
+            tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+            aiCredits: 0,
+            durationMs: 0,
+            toolCalls: [],
+            skillCount: 0,
+            agentCount: 0,
+            mcpCount: 0,
+            status: 'running',
+        };
+        if (promptId)
+            rememberClaudeEntry(claudePromptEntries, promptId, entry);
+        ensureSession(eventSessionId, resolvedProjectId);
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+        return;
+    }
+    if (eventName === 'claude_code.assistant_response') {
+        const existingEntry = promptId ? claudePromptEntries.get(promptId) : undefined;
+        const entry = existingEntry ?? {
+            id: claudeEventId(record, attrs, 'response'),
+            sessionId: eventSessionId,
+            dateTime,
+            prompt: '[Claude Code response]',
+            tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+            aiCredits: 0,
+            durationMs: 0,
+            toolCalls: [],
+            skillCount: 0,
+            agentCount: 0,
+            mcpCount: 0,
+            status: 'running',
+        };
+        entry.response = getStringAttr(attrs, 'response');
+        entry.status = 'done';
+        entry.durationMs = Number(getStringAttr(attrs, 'duration_ms') ?? 0);
+        ensureSession(eventSessionId, resolvedProjectId);
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+        traceEvents.emit('trace:done', entry);
+        return;
+    }
+    if (eventName === 'claude_code.tool_result') {
+        const entry = promptId ? claudePromptEntries.get(promptId) : undefined;
+        if (!entry)
+            return;
+        const toolName = getStringAttr(attrs, 'tool_name') ?? 'Claude Code tool';
+        const toolId = getStringAttr(attrs, 'tool_use_id') ?? randomUUID();
+        if (entry.toolCalls.some(call => call.id === toolId))
+            return;
+        entry.toolCalls.push({
+            id: toolId,
+            name: toolName,
+            type: detectToolType(toolName),
+            input: {},
+            startedAt: Date.parse(dateTime),
+            endedAt: Date.parse(dateTime),
+            durationMs: Number(getStringAttr(attrs, 'duration_ms') ?? 0),
+            error: getStringAttr(attrs, 'error'),
+        });
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+    }
+}
+function processClaudeLogs(payload, defaultSessionId, projectId) {
+    if (!payload || !Array.isArray(payload.resourceLogs)) {
+        throw new Error('OTLP logs payload must contain resourceLogs');
+    }
+    for (const resourceLogs of payload.resourceLogs ?? []) {
+        const resourceAttrs = resourceLogs.resource?.attributes ?? [];
+        const sessionId = getStringAttr(resourceAttrs, 'session.id') ?? defaultSessionId;
+        const workingDir = detectWorkingDir(resourceAttrs);
+        for (const scopeLogs of resourceLogs.scopeLogs ?? []) {
+            for (const record of scopeLogs.logRecords ?? []) {
+                processClaudeLogRecord(record, resourceAttrs, sessionId, projectId, workingDir);
+            }
+        }
+    }
+}
 function processSpans(spans, sessionId, projectId, workingDir) {
     for (const span of spans) {
         // DEBUG — log raw span to stderr when COPILOT_TRACER_DEBUG=1
@@ -75,6 +236,78 @@ function processSpans(spans, sessionId, projectId, workingDir) {
         const spanName = span.name;
         const traceId = span.traceId;
         const spanId = span.spanId;
+        if (spanName === 'claude_code.interaction') {
+            const attrs = span.attributes ?? [];
+            const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
+            const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+            const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
+            const entry = {
+                id: spanId,
+                sessionId: getStringAttr(attrs, 'session.id') ?? sessionId,
+                dateTime: nanoToIso(span.startTimeUnixNano),
+                prompt: getStringAttr(attrs, 'user_prompt') ?? '[Claude Code interaction]',
+                tokens: { input: inputTokens, output: outputTokens, cached: Number(getAttr(attrs, 'cache_read_tokens') ?? 0), reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
+                aiCredits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model),
+                durationMs: Number(getAttr(attrs, 'interaction.duration_ms')
+                    ?? (nanoToMs(span.endTimeUnixNano) - nanoToMs(span.startTimeUnixNano))),
+                toolCalls: [],
+                skillCount: 0,
+                agentCount: 0,
+                mcpCount: 0,
+                status: (span.status?.code ?? 0) === 2 ? 'error' : 'done',
+                error: span.status?.message,
+            };
+            // Apply any llm_request delta that arrived before this interaction span.
+            const pendingDelta = pendingClaudeLlmDeltas.get(traceId);
+            if (pendingDelta) {
+                entry.tokens = {
+                    input: entry.tokens.input + pendingDelta.input,
+                    output: entry.tokens.output + pendingDelta.output,
+                    cached: entry.tokens.cached + pendingDelta.cached,
+                    reasoning: 0,
+                    written: entry.tokens.written + pendingDelta.output,
+                    total: entry.tokens.total + pendingDelta.input + pendingDelta.output,
+                };
+                entry.aiCredits += pendingDelta.credits;
+                pendingClaudeLlmDeltas.delete(traceId);
+            }
+            ensureSession(entry.sessionId, resolveProjectId(getAttr(attrs, 'vcs.repository.url'), detectWorkingDir(attrs) ?? workingDir, projectId));
+            upsertTrace(entry);
+            rememberClaudeEntry(claudeInteractionEntries, traceId, entry);
+            traceEvents.emit('trace:update', entry);
+            traceEvents.emit('trace:done', entry);
+            continue;
+        }
+        if (spanName === 'claude_code.llm_request') {
+            const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
+            const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+            const cachedTokens = Number(getAttr(attrs, 'cache_read_tokens') ?? 0);
+            const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
+            const entry = claudeInteractionEntries.get(traceId);
+            if (entry) {
+                entry.tokens = {
+                    input: entry.tokens.input + inputTokens,
+                    output: entry.tokens.output + outputTokens,
+                    cached: entry.tokens.cached + cachedTokens,
+                    reasoning: 0,
+                    written: entry.tokens.written + outputTokens,
+                    total: entry.tokens.total + inputTokens + outputTokens,
+                };
+                entry.aiCredits += calcClaudeCredits({ input: inputTokens, output: outputTokens }, model);
+                upsertTrace(entry);
+                traceEvents.emit('trace:update', entry);
+            }
+            else {
+                // Parent claude_code.interaction span hasn't arrived yet — buffer the delta.
+                const pending = pendingClaudeLlmDeltas.get(traceId) ?? { input: 0, output: 0, cached: 0, credits: 0 };
+                pending.input += inputTokens;
+                pending.output += outputTokens;
+                pending.cached += cachedTokens;
+                pending.credits += calcClaudeCredits({ input: inputTokens, output: outputTokens }, model);
+                rememberClaudeEntry(pendingClaudeLlmDeltas, traceId, pending);
+            }
+            continue;
+        }
         // ── invoke_agent span = top-level agent turn ──────────────────────────
         if (spanName === 'invoke_agent') {
             const startMs = nanoToMs(span.startTimeUnixNano);
@@ -426,8 +659,17 @@ export function registerOtlpRoutes(app, defaultSessionId, projectId) {
             res.status(400).json({ error: 'invalid payload' });
         }
     });
-    // Metrics + logs — accept and ignore
+    app.post('/v1/logs', (req, res) => {
+        try {
+            processClaudeLogs(req.body, defaultSessionId, projectId);
+            res.status(200).json({ partialSuccess: {} });
+        }
+        catch (e) {
+            console.error('[OTLP] log parse error:', e);
+            res.status(400).json({ error: 'invalid payload' });
+        }
+    });
+    // Metrics remain accepted for Claude Code dashboards but are not trace entries.
     app.post('/v1/metrics', (_req, res) => res.status(200).json({ partialSuccess: {} }));
-    app.post('/v1/logs', (_req, res) => res.status(200).json({ partialSuccess: {} }));
-    console.log('  📡 OTLP receiver ready on /v1/traces');
+    console.log('  📡 OTLP receiver ready on /v1/traces and /v1/logs');
 }

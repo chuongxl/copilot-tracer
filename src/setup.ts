@@ -156,11 +156,13 @@ function patchShellProfile(profilePath: string, port: number): { action: 'added'
 
   // Already has our block?
   if (content.includes('copilot-tracer OTLP config')) {
-    // Check if port matches
-    if (content.includes(`http://localhost:${port}`)) {
+    // Only skip if the embedded block is byte-identical to what we'd generate now —
+    // a marker + matching port isn't enough, since the block's env vars can gain new
+    // keys (e.g. Claude Code support) between tracer versions without the port changing.
+    if (content.includes(block)) {
       return { action: 'already_set' };
     }
-    // Port changed — update
+    // Block is stale (port changed, or vars were added/changed) — replace it in place
     const updated = content.replace(
       /# >>> copilot-tracer OTLP config[\s\S]*?# <<< copilot-tracer <<</,
       block
@@ -191,12 +193,9 @@ function patchVSCodeSettings(settingsPath: string, port: number): { action: 'add
   const existing = (settings[envKey] ?? {}) as Record<string, string>;
   const newEnv = vscodeEnvBlock(port);
 
-  // Check if already set correctly
-  if (
-    existing[OTEL_ENDPOINT_KEY] === `http://localhost:${port}` &&
-    existing[OTEL_CONTENT_KEY] === 'true' &&
-    existing[OTEL_ENABLED_KEY] === 'true'
-  ) {
+  // Already set correctly only if every current key/value is present — checking a
+  // hardcoded subset let newer keys (e.g. Claude Code support) silently go unset.
+  if (Object.entries(newEnv).every(([k, v]) => existing[k] === v)) {
     return { action: 'already_set' };
   }
 

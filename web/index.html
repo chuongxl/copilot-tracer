@@ -321,7 +321,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
     <div class="stats-bar">
       <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
-      <div class="stat"><span class="stat-label">AI Credits</span><span class="stat-value credits" id="s-credits">0.00 cr | $0.0000</span></div>
+      <div class="stat"><span class="stat-label">Est Cost</span><span class="stat-value credits" id="s-credits">$0.0000</span></div>
       <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
       <div class="stat"><span class="stat-label">Cached</span><span class="stat-value tokens" id="s-cached">0</span></div>
       <div class="stat"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#d2a8ff" id="s-reasoning">0</span></div>
@@ -338,7 +338,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
             <tr>
               <th>Date / Time</th>
               <th>Prompt</th>
-              <th>AI Credits</th>
+              <th>Est Cost</th>
               <th>Duration</th>
               <th>Cached Tokens</th>
               <th>Written Tokens</th>
@@ -488,7 +488,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
         <div class="dash-total-value tokens">${data.totals.tokens.toLocaleString()}</div>
       </div>
       <div class="dash-total-card">
-        <div class="dash-total-label">Total AI Credits</div>
+        <div class="dash-total-label">Total Est Cost</div>
         <div class="dash-total-value credits">${fmtCredits(data.totals.credits)}</div>
       </div>
     `;
@@ -525,7 +525,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
               <span class="dash-project-stat-value tokens">${p.totalTokens.toLocaleString()}</span>
             </div>
             <div class="dash-project-stat">
-              <span class="dash-project-stat-label">AI Credits</span>
+              <span class="dash-project-stat-label">Est Cost</span>
               <span class="dash-project-stat-value credits">${fmtCredits(p.totalCredits)}</span>
             </div>
           </div>
@@ -559,7 +559,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     return ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(1) + 's';
   }
 
-  function fmtCredits(c) { return (c||0).toFixed(2) + ' cr | $' + ((c||0)*0.01).toFixed(4); }
+  function fmtCredits(c) { return '$' + ((c||0)*0.01).toFixed(4); }
 
   function fmtDateTime(dt) {
     if (!dt) return '—';
@@ -650,7 +650,7 @@ Written:   ${(t.tokens?.written||0).toLocaleString()}
 Reasoning: ${(t.tokens?.reasoning||0).toLocaleString()}
 Output:    ${(t.tokens?.output||0).toLocaleString()}
 Total:     ${(t.tokens?.total||0).toLocaleString()}
-AI Credits: ${fmtCredits(t.aiCredits)}
+Est Cost:  ${fmtCredits(t.aiCredits)}
         </div>
       </div>
       ${t.toolCalls?.length ? `
@@ -725,14 +725,14 @@ AI Credits: ${fmtCredits(t.aiCredits)}
   function showCreditDetail(id) {
     const t = traces[id];
     if (!t) return;
-    document.getElementById('modal-title').textContent = `AI Credits: ${fmtCredits(t.aiCredits)}`;
+    document.getElementById('modal-title').textContent = `Est Cost: ${fmtCredits(t.aiCredits)}`;
     document.getElementById('modal-body').innerHTML = `
       <div class="detail-box" style="line-height:2">
 Input tokens:     ${(t.tokens?.input||0).toLocaleString()} × $0.003/1k = $${((t.tokens?.input||0)/1000*0.003).toFixed(5)}
 Written tokens:   ${(t.tokens?.written||0).toLocaleString()} × $0.006/1k = $${((t.tokens?.written||0)/1000*0.006).toFixed(5)}
 Reasoning tokens: ${(t.tokens?.reasoning||0).toLocaleString()} × $0.009/1k = $${((t.tokens?.reasoning||0)/1000*0.009).toFixed(5)}
 ─────────────────────────────────────────
-Total AI Credits: ${fmtCredits(t.aiCredits)}
+Total Est Cost:   ${fmtCredits(t.aiCredits)}
 Duration:         ${fmtDuration(t.durationMs)}
       </div>
     `;

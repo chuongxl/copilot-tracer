@@ -13,7 +13,7 @@ function fmtDuration(ms: number): string {
 }
 
 function fmtCredits(c: number): string {
-  return `${c.toFixed(2)} cr | $${(c * 0.01).toFixed(4)}`;
+  return `$${(c * 0.01).toFixed(4)}`;
 }
 
 function statusColor(status: TraceEntry['status'], text: string): string {
@@ -29,7 +29,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
     head: [
       chalk.cyan('Date / Time'),
       chalk.cyan('Prompt'),
-      chalk.cyan('AI Credits'),
+      chalk.cyan('Est Cost'),
       chalk.cyan('Duration'),
       chalk.cyan('Tokens\nCached|Written|Reason'),
       chalk.cyan('Skills'),
