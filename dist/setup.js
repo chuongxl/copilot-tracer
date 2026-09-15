@@ -89,6 +89,119 @@ function vscodeEnvBlock(port) {
         [OTEL_LOG_RESPONSES_KEY]: '1',
     };
 }
+// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// OTLP alone can't correlate a multi-prompt Claude session (its logs key on prompt.id,
+// its spans key on OTLP traceId, and neither is always present). Hooks give us the
+// ordered turn/tool lifecycle; OTLP still supplies the token/model/cost numbers.
+/** Events the tracer subscribes to, and which of them support a matcher. */
+const CLAUDE_HOOK_EVENTS = [
+    { event: 'SessionStart', matcher: undefined },
+    { event: 'UserPromptSubmit', matcher: undefined },
+    { event: 'PreToolUse', matcher: '.*' },
+    { event: 'PostToolUse', matcher: '.*' },
+    { event: 'PostToolUseFailure', matcher: '.*' },
+    { event: 'Stop', matcher: undefined },
+    { event: 'StopFailure', matcher: undefined },
+    { event: 'SessionEnd', matcher: undefined },
+];
+export function claudeHookUrl(port) {
+    return `http://localhost:${port}/claude/hook`;
+}
+function getClaudeSettingsPath() {
+    return path.join(os.homedir(), '.claude', 'settings.json');
+}
+/** Our handler is identified by its URL path so we can update the port in place. */
+function isTracerHandler(handler) {
+    return handler?.type === 'http' && typeof handler.url === 'string' && handler.url.includes('/claude/hook');
+}
+function tracerHandler(port) {
+    return {
+        type: 'http',
+        url: claudeHookUrl(port),
+        // Short timeout: a hook that stalls must never hold up the user's session. A
+        // timed-out http hook is cancelled and renders no decision, which is what we want.
+        timeout: 5,
+    };
+}
+/**
+ * Merge the tracer's hooks into Claude's settings.
+ *
+ * Merging (never replacing) is mandatory — users and plugins routinely register their
+ * own handlers on these same events, and clobbering them would silently break unrelated
+ * tooling. We only ever add, update, or leave alone our own `/claude/hook` handler.
+ */
+export function patchClaudeSettings(settingsPath, port) {
+    let settings = {};
+    if (fs.existsSync(settingsPath)) {
+        const raw = fs.readFileSync(settingsPath, 'utf8').trim();
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    return { action: 'skipped', reason: '~/.claude/settings.json is not a JSON object' };
+                }
+                settings = parsed;
+            }
+            catch {
+                // Never overwrite a file we can't understand — the user would lose their config.
+                return { action: 'skipped', reason: 'could not parse ~/.claude/settings.json' };
+            }
+        }
+    }
+    // Everything below treats the user's file as untrusted: it is hand-edited, shared
+    // between tools, and losing part of it would silently break their setup. Anything we
+    // don't recognise is left exactly as found.
+    const rawHooks = settings.hooks;
+    if (rawHooks !== undefined && (typeof rawHooks !== 'object' || rawHooks === null || Array.isArray(rawHooks))) {
+        return { action: 'skipped', reason: '"hooks" in ~/.claude/settings.json is not an object' };
+    }
+    const hooks = (rawHooks ?? {});
+    let added = false;
+    let updated = false;
+    for (const { event, matcher } of CLAUDE_HOOK_EVENTS) {
+        const rawGroups = hooks[event];
+        // An unrecognised shape for this event is left untouched rather than replaced —
+        // overwriting it would discard whatever the user or a plugin configured there.
+        if (rawGroups !== undefined && !Array.isArray(rawGroups))
+            continue;
+        const groups = (rawGroups ?? []);
+        const desired = tracerHandler(port);
+        // Only well-formed groups are candidates for merging into.
+        const usable = groups.filter((g) => !!g && typeof g === 'object' && !Array.isArray(g));
+        // Find our handler wherever it already lives in this event's groups.
+        const ownerGroup = usable.find(g => Array.isArray(g.hooks) && g.hooks.some(h => !!h && isTracerHandler(h)));
+        if (ownerGroup) {
+            const handlers = ownerGroup.hooks;
+            const index = handlers.findIndex(h => !!h && isTracerHandler(h));
+            if (handlers[index].url !== desired.url || handlers[index].timeout !== desired.timeout) {
+                handlers[index] = { ...handlers[index], ...desired };
+                updated = true;
+            }
+            if (matcher !== undefined && ownerGroup.matcher !== matcher) {
+                ownerGroup.matcher = matcher;
+                updated = true;
+            }
+            continue;
+        }
+        // Reuse an existing group with the same matcher so we don't fragment the config.
+        const sameMatcher = usable.find(g => (g.matcher ?? undefined) === matcher);
+        if (sameMatcher) {
+            sameMatcher.hooks = [...(Array.isArray(sameMatcher.hooks) ? sameMatcher.hooks : []), desired];
+        }
+        else {
+            const group = matcher === undefined ? { hooks: [desired] } : { matcher, hooks: [desired] };
+            groups.push(group);
+        }
+        hooks[event] = groups;
+        added = true;
+    }
+    if (!added && !updated)
+        return { action: 'already_set' };
+    settings.hooks = hooks;
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+    return { action: added ? 'added' : 'updated' };
+}
 // ── Detection helpers ─────────────────────────────────────────────────────────
 function detectCopilotCli() {
     try {
@@ -265,7 +378,27 @@ export function runSetup(port, silent = false) {
             console.log(`\n${WARN} VS Code settings: ${result.reason}`);
         }
     }
-    // 5. Apply env vars to the current process so the OTLP receiver works immediately
+    // 5. Patch Claude Code hooks (turn/tool lifecycle — OTLP can't correlate multi-prompt sessions)
+    const claudeSettingsPath = getClaudeSettingsPath();
+    const claudeResult = patchClaudeSettings(claudeSettingsPath, port);
+    if (claudeResult.action === 'added') {
+        console.log(`\n${CHECK} Claude Code hooks installed`);
+        console.log(`   ${ARROW} ~/.claude/settings.json → ${claudeHookUrl(port)}`);
+        console.log(`   ${ARROW} Captures every prompt, tool call and turn (merged with your existing hooks)`);
+        console.log(`   ${ARROW} Restart Claude Code to apply`);
+    }
+    else if (claudeResult.action === 'updated') {
+        console.log(`\n${CHECK} Claude Code hooks updated`);
+        console.log(`   ${ARROW} Endpoint now ${claudeHookUrl(port)}`);
+        console.log(`   ${ARROW} Restart Claude Code to apply`);
+    }
+    else if (claudeResult.action === 'already_set') {
+        console.log(`\n${CHECK} Claude Code hooks: already configured`);
+    }
+    else {
+        console.log(`\n${WARN} Claude Code hooks: ${claudeResult.reason}`);
+    }
+    // 6. Apply env vars to the current process so the OTLP receiver works immediately
     process.env[OTEL_ENDPOINT_KEY] = `http://localhost:${port}`;
     process.env[OTEL_CONTENT_KEY] = 'true';
     process.env[OTEL_ENABLED_KEY] = 'true';
@@ -276,7 +409,7 @@ export function runSetup(port, silent = false) {
     process.env[OTEL_PROTOCOL_KEY] = 'http/json';
     process.env[OTEL_LOG_PROMPTS_KEY] = '1';
     process.env[OTEL_LOG_RESPONSES_KEY] = '1';
-    // 6. Summary
+    // 7. Summary
     if (!silent) {
         const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
         console.log('\n────────────────────────────────────────────────');

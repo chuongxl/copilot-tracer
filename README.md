@@ -32,7 +32,9 @@ This will:
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
 4. Enable Claude Code OTLP logs/events and enhanced beta traces
-5. Start the daemon on port 4747
+5. Install Claude Code hooks into `~/.claude/settings.json` (merged with any hooks you
+   already have — nothing is overwritten)
+6. Start the daemon on port 4747
 
 Then apply env vars in your current shell:
 
@@ -40,9 +42,10 @@ Then apply env vars in your current shell:
 source ~/.zshrc
 ```
 
-Restart VS Code once. After that, the daemon collects traces from all your Copilot
-and Claude Code sessions automatically. Claude Code content flags are enabled by
-setup so prompts and responses can be displayed in the local dashboard.
+Restart VS Code once, and restart Claude Code to pick up the hooks. After that, the
+daemon collects traces from all your Copilot and Claude Code sessions automatically.
+Claude Code content flags are enabled by setup so prompts and responses can be
+displayed in the local dashboard.
 
 Open **http://localhost:4747** to see the dashboard.
 
@@ -195,6 +198,45 @@ export OTEL_LOG_ASSISTANT_RESPONSES=1
 Claude Code exports standard OTLP logs/events and optional beta traces. See
 [Anthropic's monitoring documentation](https://code.claude.com/docs/en/monitoring-usage)
 for protocol and content controls.
+
+### Claude Code hooks (required for full session capture)
+
+Telemetry alone can't reconstruct a multi-prompt Claude session: its log events are
+correlated by `prompt.id` while its spans are correlated by OTLP `traceId`, and neither
+key is always present. The result is turns with no token usage that never leave the
+`running` state.
+
+So the tracer also registers [hooks](https://code.claude.com/docs/en/hooks), which give
+it an ordered, complete lifecycle — every prompt, every tool call, every turn boundary.
+The two halves join on `prompt_id`, which Claude documents as matching the OTLP
+`prompt.id` attribute:
+
+- **Hooks** own the turn and tool lifecycle.
+- **OTLP** enriches those turns with tokens, model and cost.
+
+`copilot-tracer --setup` writes this for you. To add it by hand, merge the following into
+`~/.claude/settings.json` (keep any hooks you already have — Claude runs all of them):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "http", "url": "http://localhost:4747/claude/hook", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+Setup subscribes to `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PostToolUseFailure`, `Stop`, `StopFailure` and `SessionEnd` using the same handler.
+
+The receiver always answers `204 No Content`, which the hooks spec defines as "no
+decision", so it can never block a tool call, deny a permission, or stop a turn. If the
+daemon isn't running, Claude treats the connection failure as a non-blocking error and
+your session continues normally.
+
+If hooks are unavailable (older Claude Code, `disableAllHooks`, remote sessions), the
+tracer falls back to its original OTLP-only handling.
 
 For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 

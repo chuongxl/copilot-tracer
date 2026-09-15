@@ -16,6 +16,7 @@
 ## No test suite
 
 There is no test framework or test script. Manual testing only:
+- `node test-claude-hooks.mjs` runs end-to-end Claude hook + OTLP checks against a throwaway DB
 - `node test-seed.mjs` seeds 4 sample traces to SQLite
 - Then `npm run dev -- --daemon --port 4747`
 - Verify via `curl http://localhost:4747/api/dashboard`
@@ -32,6 +33,7 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - **Normal mode** — per-session with optional ACP proxy for live CLI tracing.
 - **Web UI** is a single vanilla JS file at `web/index.html` with Socket.io client. No build step for frontend.
 - **OTLP receiver** (`src/otlpReceiver.ts`) — parses OpenTelemetry spans from Copilot. Extracts `github.copilot.git.repository` for auto project detection.
+- **Claude Code hooks** (`src/claudeHooks.ts` → `src/claudeSession.ts`) — `POST /claude/hook` receives Claude's turn/tool lifecycle. Hooks own the lifecycle, OTLP enriches it with tokens/model/cost, joined on `prompt_id` = OTLP `prompt.id`. Falls back to OTLP-only when hooks aren't configured. The endpoint must always return `204` so it never blocks a Claude session.
 - **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables.
 - **Data model**: `Project → Session → Trace` hierarchy. Projects auto-created from repo URL.
 
