@@ -4,7 +4,10 @@ import os from 'os';
 import fs from 'fs';
 import type { TraceEntry, SessionSummary, TokenUsage, DashboardData } from './types.js';
 
-const DB_DIR = path.join(os.homedir(), '.copilot-tracer');
+// Overridable so a verification run can point at a throwaway database instead of
+// polluting the user's real trace history.
+const DB_DIR = process.env.COPILOT_TRACER_HOME ?? path.join(os.homedir(), '.copilot-tracer');
+
 const DB_PATH = path.join(DB_DIR, 'traces.db');
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });

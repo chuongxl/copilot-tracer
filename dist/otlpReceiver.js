@@ -17,6 +17,8 @@
 import { randomUUID } from 'crypto';
 import { upsertTrace, createSession, deleteTrace, ensureProject, ensureProjectByRepo } from './db.js';
 import { traceEvents } from './proxy.js';
+import { calcClaudeCredits } from './claudePricing.js';
+import { applyClaudeUsage, enrichClaudeContent, finishTurn, isHookTracked } from './claudeSession.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs, key) {
     const kv = attrs?.find(a => a.key === key);
@@ -59,31 +61,7 @@ function getBodyText(body) {
     return undefined;
 }
 const inFlight = new Map(); // traceId → InFlight
-// Anthropic API pricing per 1K tokens (USD), converted to GitHub "AI credit" units
-// (1 credit = $0.01) so aiCredits stays one unit across Copilot and Claude entries.
-// Rates are Anthropic's current published per-model prices; a model id that doesn't
-// match a specific entry falls back to its tier's (opus/sonnet/haiku) latest rate.
-const ANTHROPIC_USD_PER_1K = {
-    'claude-fable-5': { input: 0.010, output: 0.050 },
-    'claude-mythos-5': { input: 0.010, output: 0.050 },
-    'claude-opus-5': { input: 0.005, output: 0.025 },
-    'claude-opus-4-8': { input: 0.005, output: 0.025 },
-    'claude-opus-4-7': { input: 0.005, output: 0.025 },
-    'claude-opus-4-6': { input: 0.005, output: 0.025 },
-    'claude-sonnet-5': { input: 0.002, output: 0.010 },
-    'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
-    'claude-haiku-4-5': { input: 0.001, output: 0.005 },
-    'opus': { input: 0.005, output: 0.025 },
-    'sonnet': { input: 0.003, output: 0.015 },
-    'haiku': { input: 0.001, output: 0.005 },
-    'default': { input: 0.003, output: 0.015 },
-};
-export function calcClaudeCredits(tokens, model) {
-    const key = Object.keys(ANTHROPIC_USD_PER_1K).find(k => (model ?? '').toLowerCase().includes(k)) ?? 'default';
-    const rate = ANTHROPIC_USD_PER_1K[key];
-    const usd = (tokens.input / 1000) * rate.input + (tokens.output / 1000) * rate.output;
-    return usd * 100; // USD → credits (1 credit = $0.01)
-}
+export { calcClaudeCredits };
 // Sessions are created lazily. Always upsert so project_id gets backfilled
 // when the session was created earlier without a project.
 function ensureSession(sessionId, projectId) {
@@ -142,6 +120,27 @@ function processClaudeLogRecord(record, resourceAttrs, sessionId, projectId, wor
     const promptId = getStringAttr(attrs, 'prompt.id');
     const resolvedProjectId = resolveProjectId(getStringAttr(resourceAttrs, 'github.copilot.git.repository', 'vcs.repository.url'), getStringAttr(attrs, 'process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir') ?? workingDir, projectId);
     const eventSessionId = getStringAttr(attrs, 'session.id') ?? sessionId;
+    // ── Hook-authoritative path ────────────────────────────────────────────────
+    // When Claude Code hooks are reporting this session, they already own the turn and
+    // tool lifecycle (ordered, complete, and correlated by session_id + prompt_id). OTLP
+    // logs then only contribute content that hooks don't carry. Claiming the lifecycle
+    // here as well would duplicate every turn and tool call.
+    if (isHookTracked(eventSessionId)) {
+        if (eventName === 'claude_code.user_prompt') {
+            enrichClaudeContent({ sessionId: eventSessionId, promptId, prompt: getStringAttr(attrs, 'prompt') });
+            return;
+        }
+        if (eventName === 'claude_code.assistant_response') {
+            // The Stop hook normally closes the turn first; finishTurn is idempotent and
+            // backfills the response text either way.
+            finishTurn({ sessionId: eventSessionId, promptId, response: getStringAttr(attrs, 'response') });
+            return;
+        }
+        if (eventName === 'claude_code.tool_result') {
+            // Pre/PostToolUse already recorded this call with full input and real duration.
+            return;
+        }
+    }
     if (eventName === 'claude_code.user_prompt') {
         const entry = {
             id: claudeEventId(record, attrs, 'prompt'),
@@ -240,13 +239,43 @@ function processSpans(spans, sessionId, projectId, workingDir) {
             const attrs = span.attributes ?? [];
             const inputTokens = Number(getAttr(attrs, 'input_tokens') ?? 0);
             const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
+            const cachedTokens = Number(getAttr(attrs, 'cache_read_tokens') ?? 0);
             const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
+            const claudeSessionId = getStringAttr(attrs, 'session.id') ?? sessionId;
+            const claudePromptId = getStringAttr(attrs, 'prompt.id');
+            // ── Hook-authoritative path ──────────────────────────────────────────
+            // Hooks already created the turn for this prompt, so the interaction span is
+            // pure enrichment: tokens, model and cost land on the existing entry instead
+            // of spawning a second, tool-less trace for the same turn.
+            if (isHookTracked(claudeSessionId)) {
+                const pendingDelta = pendingClaudeLlmDeltas.get(traceId);
+                if (pendingDelta)
+                    pendingClaudeLlmDeltas.delete(traceId);
+                applyClaudeUsage({
+                    sessionId: claudeSessionId,
+                    promptId: claudePromptId,
+                    delta: {
+                        input: inputTokens + (pendingDelta?.input ?? 0),
+                        output: outputTokens + (pendingDelta?.output ?? 0),
+                        cached: cachedTokens + (pendingDelta?.cached ?? 0),
+                        written: outputTokens + (pendingDelta?.output ?? 0),
+                        credits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model) + (pendingDelta?.credits ?? 0),
+                        model,
+                    },
+                });
+                enrichClaudeContent({
+                    sessionId: claudeSessionId,
+                    promptId: claudePromptId,
+                    prompt: getStringAttr(attrs, 'user_prompt'),
+                });
+                continue;
+            }
             const entry = {
                 id: spanId,
-                sessionId: getStringAttr(attrs, 'session.id') ?? sessionId,
+                sessionId: claudeSessionId,
                 dateTime: nanoToIso(span.startTimeUnixNano),
                 prompt: getStringAttr(attrs, 'user_prompt') ?? '[Claude Code interaction]',
-                tokens: { input: inputTokens, output: outputTokens, cached: Number(getAttr(attrs, 'cache_read_tokens') ?? 0), reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
+                tokens: { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
                 aiCredits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model),
                 durationMs: Number(getAttr(attrs, 'interaction.duration_ms')
                     ?? (nanoToMs(span.endTimeUnixNano) - nanoToMs(span.startTimeUnixNano))),
@@ -283,6 +312,27 @@ function processSpans(spans, sessionId, projectId, workingDir) {
             const outputTokens = Number(getAttr(attrs, 'output_tokens') ?? 0);
             const cachedTokens = Number(getAttr(attrs, 'cache_read_tokens') ?? 0);
             const model = getStringAttr(attrs, 'model', 'gen_ai.request.model');
+            const claudeSessionId = getStringAttr(attrs, 'session.id') ?? sessionId;
+            const claudePromptId = getStringAttr(attrs, 'prompt.id');
+            // ── Hook-authoritative path ──────────────────────────────────────────
+            // Every iteration of Claude's agentic loop emits one of these spans. Keying on
+            // session_id + prompt_id (rather than the OTLP traceId) is what makes them
+            // accumulate onto the correct turn across a multi-prompt session.
+            if (isHookTracked(claudeSessionId)) {
+                applyClaudeUsage({
+                    sessionId: claudeSessionId,
+                    promptId: claudePromptId,
+                    delta: {
+                        input: inputTokens,
+                        output: outputTokens,
+                        cached: cachedTokens,
+                        written: outputTokens,
+                        credits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model),
+                        model,
+                    },
+                });
+                continue;
+            }
             const entry = claudeInteractionEntries.get(traceId);
             if (entry) {
                 entry.tokens = {
