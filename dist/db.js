@@ -103,7 +103,12 @@ export function createSession(id, projectId) {
       END
   `).run(id, new Date().toISOString(), projectId ?? null);
 }
-export function getDashboard() {
+export function getDashboard(page = 1, pageSize = 12) {
+    const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get();
+    const totalProjects = projectCount.count;
+    const totalPages = Math.max(1, Math.ceil(totalProjects / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const offset = (currentPage - 1) * pageSize;
     const projects = db.prepare(`
     SELECT
       p.id, p.path, p.repo_url, p.local_path,
@@ -115,8 +120,9 @@ export function getDashboard() {
     LEFT JOIN sessions s ON s.project_id = p.id
     LEFT JOIN traces t ON t.session_id = s.id
     GROUP BY p.id
-    ORDER BY last_active_at DESC
-  `).all();
+    ORDER BY last_active_at DESC, p.id ASC
+    LIMIT ? OFFSET ?
+  `).all(pageSize, offset);
     const totals = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM projects) as projects,
@@ -153,6 +159,12 @@ export function getDashboard() {
             sessions: totals.sessions,
             tokens: totals.tokens,
             credits: totals.credits,
+        },
+        pagination: {
+            page: currentPage,
+            pageSize,
+            totalPages,
+            totalProjects,
         },
     };
 }
