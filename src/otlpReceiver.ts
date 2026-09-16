@@ -349,6 +349,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
         sessionId: claudeSessionId,
         dateTime: nanoToIso(span.startTimeUnixNano),
         prompt: getStringAttr(attrs, 'user_prompt') ?? '[Claude Code interaction]',
+        model,
         tokens: { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
         aiCredits: calcClaudeCredits({ input: inputTokens, output: outputTokens }, model),
         durationMs: Number(getAttr(attrs, 'interaction.duration_ms')
@@ -412,6 +413,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
 
       const entry = claudeInteractionEntries.get(traceId);
       if (entry) {
+        if (model) entry.model = model;
         entry.tokens = {
           input: entry.tokens.input + inputTokens,
           output: entry.tokens.output + outputTokens,
@@ -631,6 +633,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
         // Update parent invoke_agent entry with richer data
         if (!inf.entry.prompt && promptText) inf.entry.prompt = promptText;
         if (!inf.entry.response && responseText) inf.entry.response = responseText;
+        if (!inf.entry.model && model) inf.entry.model = model;
         if (inf.entry.tokens.total === 0 && inputTokens + outputTokens > 0) {
           inf.entry.tokens = { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens };
         }
@@ -646,6 +649,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
           dateTime: nanoToIso(span.startTimeUnixNano),
           prompt: promptText || `[LLM call: ${model}]`,
           response: responseText || undefined,
+          model,
           tokens: { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
           aiCredits: credits ? Number(credits) : 0,
           durationMs,
