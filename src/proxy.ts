@@ -160,6 +160,7 @@ export function handleAcpMessage(sessionId: string, msg: AcpMessage, direction: 
         // Token usage update
         const usage = (update.usage ?? update.tokens ?? {}) as Record<string, number>;
         const model = String(update.model ?? update.modelId ?? 'default');
+        active.entry.model = model;
         active.entry.tokens = {
           input:     usage.input_tokens     ?? usage.prompt_tokens     ?? active.entry.tokens.input,
           output:    usage.output_tokens    ?? usage.completion_tokens  ?? active.entry.tokens.output,
