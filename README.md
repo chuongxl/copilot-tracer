@@ -1,6 +1,6 @@
 # copilot-tracer
 
-Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, **Claude Code**, and **VS Code Copilot extension**.
+Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, **Claude Code**, **OpenAI Codex CLI**, and **VS Code Copilot extension**.
 
 Captures every prompt, response, token usage, AI credits, tool calls, and duration — all in one place. Runs as a background daemon that collects data from all your projects automatically. Includes a web dashboard with project overview and per-project live tracing.
 
@@ -10,8 +10,8 @@ Captures every prompt, response, token usage, AI credits, tool calls, and durati
 
 - **Daemon mode** — install once, run forever. Collects traces from all projects automatically
 - **Auto project detection** — detects project from `github.copilot.git.repository` in OTLP spans
-- **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set env vars, done.
-- **Works everywhere** — captures GitHub Copilot CLI, Claude Code, and VS Code Copilot Chat
+- **Zero-intrusion capture** — uses each tool's built-in OTel support. Set env vars (or, for Codex, one config block), done.
+- **Works everywhere** — captures GitHub Copilot CLI, Claude Code, Codex CLI, and VS Code Copilot Chat
 - **Dashboard** — overview of all projects with token usage, credits, and session counts
 - **Live tracer** — real-time trace table per project with detail panel
 - **Prompt refinement** — rewrites prompts with stronger instructions and less noise
@@ -28,13 +28,14 @@ copilot-tracer --setup --daemon
 ```
 
 This will:
-1. Detect your Copilot CLI and VS Code installation
+1. Detect your Copilot CLI, Codex CLI, and VS Code installation
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
 4. Enable Claude Code OTLP logs/events and enhanced beta traces
 5. Install Claude Code hooks into `~/.claude/settings.json` (merged with any hooks you
    already have — nothing is overwritten)
-6. Start the daemon on port 4747
+6. Patch `~/.codex/config.toml`'s `[otel]` block, if Codex CLI is installed
+7. Start the daemon on port 4747
 
 Then apply env vars in your current shell:
 

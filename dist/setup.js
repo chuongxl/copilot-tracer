@@ -270,6 +270,17 @@ function detectCopilotCli() {
         return { found: false };
     }
 }
+// T014 — detects a local Codex CLI install (mirrors detectCopilotCli's which/--version shape).
+function detectCodexCli() {
+    try {
+        const p = execSync('which codex', { encoding: 'utf8' }).trim();
+        const v = execSync('codex --version 2>/dev/null || true', { encoding: 'utf8' }).trim();
+        return { found: true, path: p, version: v.split('\n')[0] };
+    }
+    catch {
+        return { found: false };
+    }
+}
 function detectVSCode() {
     try {
         const v = execSync('code --version 2>/dev/null', { encoding: 'utf8' }).trim();
@@ -341,6 +352,13 @@ function getVSCodeSettingsPath() {
     // Linux (and WSL)
     return path.join(os.homedir(), '.config/Code/User/settings.json');
 }
+// T015 — Codex's own config file (contracts/codex-config-toml.md).
+function codexConfigPath() {
+    return path.join(os.homedir(), '.codex', 'config.toml');
+}
+function readCodexConfig(configPath) {
+    return fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+}
 // ── Patchers ──────────────────────────────────────────────────────────────────
 function patchShellProfile(profilePath, port) {
     const content = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
@@ -389,6 +407,39 @@ function patchVSCodeSettings(settingsPath, port) {
     settings[envKey] = { ...existing, ...newEnv };
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
     return { action: wasSet ? 'updated' : 'added' };
+}
+// T016 — Codex's config.toml [otel] block. TOML supports `#` line comments, so the same
+// sentinel-comment-block detect/append/update-port technique as patchShellProfile applies
+// unmodified here (research.md Decision 5).
+function codexOtelBlock(port) {
+    return [
+        `# >>> copilot-tracer OTLP config (auto-added) >>>`,
+        `[otel]`,
+        `exporter = { otlp-http = { endpoint = "http://localhost:${port}", protocol = "binary" } }`,
+        `trace_exporter = { otlp-http = { endpoint = "http://localhost:${port}", protocol = "binary" } }`,
+        `# <<< copilot-tracer <<<`,
+    ].join('\n');
+}
+function patchCodexConfig(configPath, port) {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const content = readCodexConfig(configPath);
+    const block = codexOtelBlock(port);
+    if (content.includes('copilot-tracer OTLP config')) {
+        if (content.includes(`http://localhost:${port}`)) {
+            return { action: 'already_set' };
+        }
+        const updated = content.replace(/# >>> copilot-tracer OTLP config[\s\S]*?# <<< copilot-tracer <<</, block);
+        fs.writeFileSync(configPath, updated, 'utf8');
+        return { action: 'updated' };
+    }
+    // FR-009 — a non-sentinel [otel] table already exists (e.g. user's own collector config):
+    // do not touch the file, warn instead.
+    if (/^\s*\[otel\]/m.test(content)) {
+        return { action: 'conflict' };
+    }
+    const newContent = content.trimEnd() ? content.trimEnd() + '\n\n' + block + '\n' : block + '\n';
+    fs.writeFileSync(configPath, newContent, 'utf8');
+    return { action: 'added' };
 }
 // ── Main setup ────────────────────────────────────────────────────────────────
 export function runSetup(port, silent = false) {
@@ -489,7 +540,36 @@ export function runSetup(port, silent = false) {
     else {
         console.log(`\n${WARN} Claude Code hooks: ${claudeResult.reason}`);
     }
-    // 6. Apply env vars to the current process so the OTLP receiver works immediately
+    // 6. Detect + patch Codex CLI config.toml (T017)
+    const codex = detectCodexCli();
+    if (codex.found) {
+        console.log(`\n${CHECK} OpenAI Codex CLI detected`);
+        console.log(`   ${INFO} Path   : ${codex.path}`);
+        if (codex.version)
+            console.log(`   ${INFO} Version: ${codex.version}`);
+        const configPath = codexConfigPath();
+        const result = patchCodexConfig(configPath, port);
+        if (result.action === 'added') {
+            console.log(`   ${CHECK} Codex config patched: ${configPath}`);
+            console.log(`   ${ARROW} Added [otel] block pointing at http://localhost:${port}`);
+        }
+        else if (result.action === 'updated') {
+            console.log(`   ${CHECK} Codex config updated: ${configPath}`);
+            console.log(`   ${ARROW} Updated port to ${port}`);
+        }
+        else if (result.action === 'already_set') {
+            console.log(`   ${CHECK} Codex config: already configured`);
+        }
+        else {
+            console.log(`   ${WARN} Codex config: an existing [otel] table was found in ${configPath}`);
+            console.log(`   ${ARROW} Not modified — add the tracer's OTLP endpoint manually if desired:`);
+            console.log(`      exporter = { otlp-http = { endpoint = "http://localhost:${port}", protocol = "binary" } }`);
+        }
+    }
+    else {
+        console.log(`\n${WARN} OpenAI Codex CLI not found — skipping Codex config`);
+    }
+    // 7. Apply env vars to the current process so the OTLP receiver works immediately
     process.env[OTEL_ENDPOINT_KEY] = `http://localhost:${port}`;
     process.env[OTEL_CONTENT_KEY] = 'true';
     process.env[OTEL_ENABLED_KEY] = 'true';
@@ -500,7 +580,7 @@ export function runSetup(port, silent = false) {
     process.env[OTEL_PROTOCOL_KEY] = 'http/json';
     process.env[OTEL_LOG_PROMPTS_KEY] = '1';
     process.env[OTEL_LOG_RESPONSES_KEY] = '1';
-    // 7. Summary
+    // 8. Summary
     if (!silent) {
         console.log('\n────────────────────────────────────────────────');
         console.log('  One manual step required:\n');

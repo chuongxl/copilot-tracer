@@ -23,9 +23,9 @@ implementation and testing of each story.
 
 **Purpose**: Scaffold the new files this feature adds, before any behavior is implemented.
 
-- [ ] T001 [P] Create `src/codexPricing.ts` with the module header comment only (mirrors
+- [X] T001 [P] Create `src/codexPricing.ts` with the module header comment only (mirrors
       `src/claudePricing.ts`'s header), no rate table yet — placeholder for Phase 5 (US3).
-- [ ] T002 [P] Create `test-codex-otlp.mjs` at the repo root with a self-contained daemon-bootstrap
+- [X] T002 [P] Create `test-codex-otlp.mjs` at the repo root with a self-contained daemon-bootstrap
       harness modeled on `test-claude-hooks.mjs` (spawn/point at a throwaway
       `COPILOT_TRACER_HOME`, start `--daemon`, expose a small `POST` helper) but no payload
       assertions yet — placeholder for Phase 3 (US1).
@@ -40,15 +40,15 @@ implementation and testing of each story.
 
 **⚠️ CRITICAL**: Complete before starting any user story phase.
 
-- [ ] T003 Extend `detectWorkingDir()` in `src/otlpReceiver.ts` to also recognize Codex's
+- [X] T003 Extend `detectWorkingDir()` in `src/otlpReceiver.ts` to also recognize Codex's
       working-directory resource attribute key (per data-model.md Project mapping), alongside the
       existing `process.working_directory` / `github.copilot.working_dir` /
       `claude_code.working_dir` keys.
-- [ ] T004 Extend `detectToolType()` in `src/otlpReceiver.ts` with Codex-specific tool-name
+- [X] T004 Extend `detectToolType()` in `src/otlpReceiver.ts` with Codex-specific tool-name
       heuristics (e.g. `apply_patch`, `shell`/`exec`-style builtins vs. any MCP-style Codex tool
       name) per data-model.md's ToolCall mapping, without changing existing Copilot/Claude
       classification outcomes.
-- [ ] T005 Add a `POST /v1/logs` route registration inside `registerOtlpRoutes()` in
+- [X] T005 Add a `POST /v1/logs` route registration inside `registerOtlpRoutes()` in
       `src/otlpReceiver.ts` (the route does not exist yet on this branch) that will dispatch to
       `processCodexLogs()`, returning `200 { partialSuccess: {} }` on a parseable batch and
       `400 { error: "invalid payload" }` only when the top-level payload isn't parseable, per
@@ -69,20 +69,20 @@ confirm the project/session/trace appear with correct tool calls and token usage
 
 ### Implementation for User Story 1
 
-- [ ] T006 [US1] Implement `codexEventId(record, attrs, eventName)` in `src/otlpReceiver.ts`
+- [X] T006 [US1] Implement `codexEventId(record, attrs, eventName)` in `src/otlpReceiver.ts`
       (mirrors `claudeEventId()`'s shape) to derive a `codex:`-namespaced trace/entry id from the
       event's prompt/turn/tool identifier attributes.
-- [ ] T007 [US1] Implement `processCodexLogRecord(record, resourceAttrs, sessionId, projectId,
+- [X] T007 [US1] Implement `processCodexLogRecord(record, resourceAttrs, sessionId, projectId,
       workingDir)` in `src/otlpReceiver.ts` handling `codex.conversation_starts` (ensure
       Session/Project via `ensureSession`/`resolveProjectId`) and `codex.user_prompt` (open a
       running `TraceEntry` per data-model.md's TraceEntry mapping).
-- [ ] T008 [US1] Extend `processCodexLogRecord()` to handle `codex.tool_decision`, appending a
+- [X] T008 [US1] Extend `processCodexLogRecord()` to handle `codex.tool_decision`, appending a
       `ToolCall` (using `detectToolType()` from T004) to the current turn's `TraceEntry`.
-- [ ] T009 [US1] Extend `processCodexLogRecord()` to handle `codex.turn_cost` and
+- [X] T009 [US1] Extend `processCodexLogRecord()` to handle `codex.turn_cost` and
       `codex.sse_event`, attaching token usage to the `TraceEntry` and closing the turn
       (`status: 'done'`), per data-model.md's TokenUsage mapping. Leave `aiCredits` computation as
       a `0`/placeholder call site for Phase 5 (US3) to fill in.
-- [ ] T010 [US1] Implement `processCodexLogs(payload, defaultSessionId, projectId)` in
+- [X] T010 [US1] Implement `processCodexLogs(payload, defaultSessionId, projectId)` in
       `src/otlpReceiver.ts` (mirrors `processClaudeLogs()`'s shape): iterate `resourceLogs` →
       `scopeLogs` → `logRecords`, resolve `sessionId`/`workingDir` from resource attributes, and
       call `processCodexLogRecord()` per record. Wire this into the `/v1/logs` route from T005
@@ -90,13 +90,13 @@ confirm the project/session/trace appear with correct tool calls and token usage
       `traceEvents.emit('trace:update', entry)` (and `'trace:done'` on completion), the same
       existing pattern used by `processClaudeLogRecord`, so the live dashboard/session view
       updates in real time for Codex traces (FR-007).
-- [ ] T011 [US1] In `processCodexLogRecord()`, return early (no-op, no throw) for any
+- [X] T011 [US1] In `processCodexLogRecord()`, return early (no-op, no throw) for any
       `event.name` that isn't a recognized `codex.*` event, satisfying FR-010/SC-005.
-- [ ] T012 [US1] Fill in `test-codex-otlp.mjs` (from T002) with a synthetic `resourceLogs` batch
+- [X] T012 [US1] Fill in `test-codex-otlp.mjs` (from T002) with a synthetic `resourceLogs` batch
       (`codex.conversation_starts` → `codex.user_prompt` → `codex.tool_decision` →
       `codex.turn_cost`, one session id + working-dir attribute) and assertions per
       `quickstart.md` steps 2–3 (project/session/trace/tool-call/token checks).
-- [ ] T013 [US1] Update `AGENTS.md` and `CLAUDE.md` architecture sections to document the new
+- [X] T013 [US1] Update `AGENTS.md` and `CLAUDE.md` architecture sections to document the new
       Codex OTLP ingestion path (`processCodexLogs`/`processCodexLogRecord`, `/v1/logs` route)
       alongside the existing Copilot CLI description.
 
@@ -114,19 +114,19 @@ without disturbing unrelated content, per `contracts/codex-config-toml.md`.
 
 ### Implementation for User Story 2
 
-- [ ] T014 [P] [US2] Implement `detectCodexCli()` in `src/setup.ts` (mirrors
+- [X] T014 [P] [US2] Implement `detectCodexCli()` in `src/setup.ts` (mirrors
       `detectCopilotCli()`'s `which`/`--version` shape).
-- [ ] T015 [US2] Implement `codexConfigPath()` and a read helper for `~/.codex/config.toml` in
+- [X] T015 [US2] Implement `codexConfigPath()` and a read helper for `~/.codex/config.toml` in
       `src/setup.ts`, creating the `~/.codex/` directory/file when absent.
-- [ ] T016 [US2] Implement `patchCodexConfig(configPath, port)` in `src/setup.ts` following the
+- [X] T016 [US2] Implement `patchCodexConfig(configPath, port)` in `src/setup.ts` following the
       sentinel-comment-block detect/append/update-port logic already used by
       `patchShellProfile()`, plus the non-sentinel-`[otel]`-table conflict check (warn, don't
       overwrite) required by FR-009 / `contracts/codex-config-toml.md`.
-- [ ] T017 [US2] Wire `detectCodexCli()` + `patchCodexConfig()` into `runSetup()` in
+- [X] T017 [US2] Wire `detectCodexCli()` + `patchCodexConfig()` into `runSetup()` in
       `src/setup.ts`, printing a status line for each of the five documented states (skip when not
       installed; added/updated/already-set/warn-on-conflict when installed), consistent with the
       existing Copilot/VS Code status output style.
-- [ ] T018 [US2] Manually verify (quickstart.md step 6): run `--setup` against each of the five
+- [X] T018 [US2] Manually verify (quickstart.md step 6): run `--setup` against each of the five
       `~/.codex/config.toml` states from `contracts/codex-config-toml.md` and confirm the correct
       outcome and console message for each.
 
@@ -145,16 +145,16 @@ compute the expected cost by hand for a known model/token count and confirm the 
 
 ### Implementation for User Story 3
 
-- [ ] T019 [P] [US3] Fill in `src/codexPricing.ts` (from T001) with an OpenAI/Codex per-model
+- [X] T019 [P] [US3] Fill in `src/codexPricing.ts` (from T001) with an OpenAI/Codex per-model
       USD-per-1K-token rate table (`Record<string, {input; output}>`) including a `default` entry,
       mirroring `claudePricing.ts`'s table shape.
-- [ ] T020 [US3] Implement `calcCodexCredits(tokens, model)` in `src/codexPricing.ts` (mirrors
+- [X] T020 [US3] Implement `calcCodexCredits(tokens, model)` in `src/codexPricing.ts` (mirrors
       `calcClaudeCredits()`'s USD→credits conversion), matching on model-name substring with
       fallback to `default` (depends on T019).
-- [ ] T021 [US3] Wire `calcCodexCredits()` into the `codex.turn_cost` handling added in T009 of
+- [X] T021 [US3] Wire `calcCodexCredits()` into the `codex.turn_cost` handling added in T009 of
       `processCodexLogRecord()` (`src/otlpReceiver.ts`), replacing the placeholder `aiCredits`
       value (depends on T009, T020).
-- [ ] T022 [US3] Extend `test-codex-otlp.mjs`'s assertions (from T012) to check the returned
+- [X] T022 [US3] Extend `test-codex-otlp.mjs`'s assertions (from T012) to check the returned
       `aiCredits` for the synthetic payload's model/token counts matches a hand-computed value
       within 1% (SC-003).
 
@@ -167,14 +167,14 @@ compute the expected cost by hand for a known model/token count and confirm the 
 **Purpose**: Verification and documentation required by the constitution's quality gates before
 delivery.
 
-- [ ] T023 Run `npx tsc --noEmit` from the repository root and fix any type errors introduced by
+- [X] T023 Run `npx tsc --noEmit` from the repository root and fix any type errors introduced by
       T001–T022.
-- [ ] T024 Run `node test-seed.mjs` then start the daemon and `curl http://localhost:4747/api/dashboard`
+- [X] T024 Run `node test-seed.mjs` then start the daemon and `curl http://localhost:4747/api/dashboard`
       to confirm existing (pre-Codex) Copilot CLI traces and totals are unchanged (SC-004).
-- [ ] T025 [P] Run `quickstart.md` step 5 (unknown-event resilience check): send a batch containing
+- [X] T025 [P] Run `quickstart.md` step 5 (unknown-event resilience check): send a batch containing
       one unrecognized `codex.*` event alongside a recognized one and confirm the daemon keeps
       responding and the recognized event is still recorded (SC-005).
-- [ ] T026 [P] Update `README.md`'s CLI flags/architecture section (if it documents the OTLP
+- [X] T026 [P] Update `README.md`'s CLI flags/architecture section (if it documents the OTLP
       receiver or `--setup` behavior) to mention Codex CLI as a supported tool.
 
 ---

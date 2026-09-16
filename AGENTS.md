@@ -32,8 +32,9 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - **Daemon mode** (`--daemon`) — always-on OTLP receiver, collects all traces.
 - **Normal mode** — per-session with optional ACP proxy for live CLI tracing.
 - **Web UI** is a single vanilla JS file at `web/index.html` with Socket.io client. No build step for frontend.
-- **OTLP receiver** (`src/otlpReceiver.ts`) — parses OpenTelemetry spans from Copilot. Extracts `github.copilot.git.repository` for auto project detection.
+- **OTLP receiver** (`src/otlpReceiver.ts`) — parses OpenTelemetry spans from Copilot on `/v1/traces`. Extracts `github.copilot.git.repository` for auto project detection.
 - **Claude Code hooks** (`src/claudeHooks.ts` → `src/claudeSession.ts`) — `POST /claude/hook` receives Claude's turn/tool lifecycle. Hooks own the lifecycle, OTLP enriches it with tokens/model/cost, joined on `prompt_id` = OTLP `prompt.id`. Falls back to OTLP-only when hooks aren't configured. The endpoint must always return `204` so it never blocks a Claude session.
+- **Codex CLI ingestion** (`src/otlpReceiver.ts`) — OpenAI Codex CLI's `codex-otel` exporter posts OTLP **logs** (not spans) to the same `/v1/logs` route as Claude; `processCodexLogs`/`processCodexLogRecord` handle `codex.conversation_starts`/`codex.user_prompt`/`codex.tool_decision`/`codex.turn_cost`/`codex.sse_event`, reusing the same Project/Session/TraceEntry model (ids namespaced `codex:...`). Cost is computed via `src/codexPricing.ts`. `--setup` detects Codex CLI and patches `~/.codex/config.toml`'s `[otel]` block (see `codexConfigPath`/`patchCodexConfig` in `src/setup.ts`).
 - **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables.
 - **Data model**: `Project → Session → Trace` hierarchy. Projects auto-created from repo URL.
 
