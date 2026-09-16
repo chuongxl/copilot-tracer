@@ -320,7 +320,6 @@ function turnForTool(sessionId: string, messageId: string | undefined, projectId
   const key = messageId ?? '';
   if (key) {
     const existing = turnsByKey.get(turnKey(sessionId, key));
-    if (existing && !existing.closed) return existing;
     if (existing) return existing;
   }
   const active = activeBySession.get(sessionId);

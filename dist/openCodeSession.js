@@ -267,8 +267,6 @@ function turnForTool(sessionId, messageId, projectId) {
     const key = messageId ?? '';
     if (key) {
         const existing = turnsByKey.get(turnKey(sessionId, key));
-        if (existing && !existing.closed)
-            return existing;
         if (existing)
             return existing;
     }

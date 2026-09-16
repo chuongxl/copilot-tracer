@@ -15,7 +15,8 @@
  */
 
 import type { Express, Request, Response, NextFunction } from 'express';
-import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import {
   updateTurn,
   startToolCall,
@@ -71,20 +72,40 @@ function errorText(raw: unknown): string | undefined {
 }
 
 /**
- * Best-effort `git remote get-url origin` for `directory`, run server-side (never inside the
- * OpenCode plugin) so a slow/missing git binary can never affect the user's session. Returns
- * undefined for anything that isn't a clean git repo with an `origin` remote — callers must
- * treat that as "no repo signal" and fall back to path-based resolution, not an error.
+ * Best-effort origin URL for `directory`, read directly from `.git/config` (never by invoking
+ * the `git` binary in a directory whose path arrives over HTTP from the OpenCode plugin).
+ * `directory` is attacker-influenced input (anyone able to reach `/opencode/hook`, i.e. anyone
+ * on the daemon's network, controls it), and running `git` with `cwd` set to an arbitrary path
+ * lets that directory's own `.git/config` execute code via config-driven hooks (`core.fsmonitor`,
+ * credential helpers, `core.sshCommand`, etc.) — the exact class of bug `git`'s own
+ * `safe.directory` protection exists for. Parsing the INI file ourselves has no such risk: it's
+ * pure text, never executed. Returns undefined for anything that isn't a readable git repo with
+ * a `[remote "origin"]` section — callers must treat that as "no repo signal" and fall back to
+ * path-based resolution, not an error.
  */
 function detectRepoUrl(directory: string): string | undefined {
   try {
-    const url = execSync('git remote get-url origin', {
-      cwd: directory,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
-    }).trim();
-    return url || undefined;
+    const configPath = path.join(directory, '.git', 'config');
+    const stat = fs.statSync(configPath);
+    // Reject anything that isn't a plain file (symlinks in an attacker-influenced directory
+    // could otherwise be used to read arbitrary files elsewhere on disk).
+    if (!stat.isFile()) return undefined;
+    const config = fs.readFileSync(configPath, 'utf8');
+
+    const lines = config.split(/\r?\n/);
+    let inOriginSection = false;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (line.startsWith('[')) {
+        inOriginSection = /^\[remote\s+"origin"\]$/i.test(line);
+        continue;
+      }
+      if (inOriginSection && /^url\s*=/.test(line)) {
+        const url = line.slice(line.indexOf('=') + 1).trim();
+        return url || undefined;
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }
