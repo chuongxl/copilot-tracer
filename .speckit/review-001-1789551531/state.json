@@ -1,0 +1,32 @@
+{
+  "status": "pass",
+  "spec_id": "001",
+  "base_ref": "23a8c5957aedafe3621b450ac52a291e51b7731a",
+  "head_ref": "32cbe55",
+  "requirements_source": "declared",
+  "requirements_checklist": [
+    { "id": "FR-001", "classification": "covered", "evidence": "src/openCodeSession.ts (registerSession/startTurn/updateTurn/startToolCall/finishToolCall/closeTurn) + src/openCodeHooks.ts handleOpenCodeHook dispatch" },
+    { "id": "FR-002", "classification": "covered", "evidence": "src/openCodeHooks.ts resolveProject()/detectRepoUrl() -> ensureProjectByRepo, fallback ensureProject(directory)" },
+    { "id": "FR-003", "classification": "covered", "evidence": "src/openCodeSession.ts detectOpenCodeToolType()" },
+    { "id": "FR-004", "classification": "covered", "evidence": "src/openCodePricing.ts calcOpenCodeCredits() wired via applyUsage() in openCodeSession.ts" },
+    { "id": "FR-005", "classification": "covered", "evidence": "openCodeSession.ts persist() emits traceEvents 'trace:update'/'trace:done', bridged to Socket.io in webServer.ts (unchanged mechanism)" },
+    { "id": "FR-006", "classification": "covered", "evidence": "src/setup.ts detectOpenCodeCli()/installOpenCodePlugin() with try/catch skip-with-reason" },
+    { "id": "FR-007", "classification": "covered", "evidence": "installOpenCodePlugin() writes only ~/.config/opencode/plugins/copilot-tracer.js, no merge with other files" },
+    { "id": "FR-008", "classification": "covered", "evidence": "new routes/modules are additive; no existing OTLP/ACP code path modified" },
+    { "id": "FR-009", "classification": "covered", "evidence": "turnKey/toolKey idempotency maps in openCodeSession.ts; unknown events ignored in handleOpenCodeHook default case; malformed body handled by error middleware (verified via curl, returns 204)" },
+    { "id": "FR-010", "classification": "covered", "evidence": "resolveProject() returns undefined when no directory/repo; createSession(sessionId, undefined) records session with no project" },
+    { "id": "FR-011", "classification": "covered", "evidence": "STALE_TURN_MS (30 min) + expireStaleTurns() in openCodeSession.ts" },
+    { "id": "FR-012", "classification": "covered", "evidence": "per-sessionId maps (activeBySession, turnsByKey) keep concurrent sessions independent" }
+  ],
+  "business_cover_percent": 100,
+  "unit_test_coverage": "N/A (no test runner detected)",
+  "findings_resolved_during_review": [
+    { "id": "SEC-001", "severity": "high", "file": "src/openCodeHooks.ts", "description": "detectRepoUrl() shelled out to `git remote get-url origin` with cwd set to client-supplied directory (config-driven command execution risk); replaced with a plain-text .git/config parser.", "resolved_in_commit": "32cbe55" },
+    { "id": "CODE-001", "severity": "low", "file": "src/openCodeSession.ts", "description": "turnForTool() had a redundant/dead conditional branch; simplified.", "resolved_in_commit": "32cbe55" },
+    { "id": "FR-002-partial", "severity": "high", "file": "src/openCodeHooks.ts", "description": "Convergence finding: project resolution used path-only ensureProject(), not repo-URL-preferring resolution like otlpReceiver.ts; fixed (T025).", "resolved_in_commit": "ba4f63c" }
+  ],
+  "open_low_severity_notes": [
+    { "note": "resetOpenCodeTracker() in src/openCodeSession.ts has no external caller (no test framework exists in this repo to invoke it); kept as a documented test-only utility mirroring the pattern intended for a future test harness.", "severity": "low", "blocking": false }
+  ],
+  "fixes": []
+}
