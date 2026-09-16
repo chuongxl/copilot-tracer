@@ -291,11 +291,8 @@ async function verifyLegacySession(legacySession) {
   if (traces[0]) {
     check('OTLP-only trace keeps its prompt', traces[0].prompt === 'Legacy prompt', traces[0].prompt);
     check('OTLP-only trace keeps its tokens', traces[0].tokens.input === 700, traces[0].tokens);
+    check('legacy OTLP-only trace recorded the model', traces[0].model === 'claude-opus-5', traces[0].model);
   }
-
-  const legacyRes = await fetch(`${BASE}/api/traces?sessionId=${encodeURIComponent(legacySession)}`);
-  const legacyTraces = await legacyRes.json();
-  check('legacy OTLP-only trace recorded the model', legacyTraces[0]?.model === 'claude-opus-5', legacyTraces[0]?.model);
 }
 
 /**
