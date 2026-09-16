@@ -377,6 +377,10 @@ function patchShellProfile(profilePath: string, port: number): { action: 'added'
   const content = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
   const block = otelEnvBlock(port);
 
+  // The PowerShell profile dir (Documents\PowerShell or \WindowsPowerShell) often
+  // doesn't exist yet — unlike ~/.zshrc's parent, which is always the home dir.
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+
   // Already has our block?
   if (content.includes('copilot-tracer OTLP config')) {
     // Only skip if the embedded block is byte-identical to what we'd generate now —
