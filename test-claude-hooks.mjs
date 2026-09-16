@@ -291,6 +291,10 @@ async function verifyLegacySession(legacySession) {
     check('OTLP-only trace keeps its prompt', traces[0].prompt === 'Legacy prompt', traces[0].prompt);
     check('OTLP-only trace keeps its tokens', traces[0].tokens.input === 700, traces[0].tokens);
   }
+
+  const legacyRes = await fetch(`${BASE}/api/traces?sessionId=${encodeURIComponent(legacySession)}`);
+  const legacyTraces = await legacyRes.json();
+  check('legacy OTLP-only trace recorded the model', legacyTraces[0]?.model === 'claude-opus-5', legacyTraces[0]?.model);
 }
 
 /**
@@ -421,6 +425,7 @@ async function main() {
       check('turn 1 summed both model iterations (3000 in / 300 out)',
         t1.tokens.input === 3000 && t1.tokens.output === 300,
         t1.tokens);
+      check('turn 1 recorded the model', t1?.model === 'claude-opus-5', t1?.model);
       check('turn 1 total matches the codebase convention (input + output)',
         t1.tokens.total === 3300, t1.tokens);
       check('turn 1 has credits', t1.aiCredits > 0, t1.aiCredits);
@@ -437,6 +442,10 @@ async function main() {
       check('turn 2 captured the response', t2.response === 'Done with second.', t2.response);
       check('turn 2 is done', t2.status === 'done', t2.status);
     }
+
+    const summaryRes = await fetch(`${BASE}/api/summary?sessionId=${encodeURIComponent(SESSION)}`);
+    const summary = await summaryRes.json();
+    check('session summary lists the model used', Array.isArray(summary.models) && summary.models.includes('claude-opus-5'), summary.models);
 
     console.log('');
     await verifyLegacySession(legacySession);
