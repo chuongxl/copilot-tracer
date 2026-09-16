@@ -325,6 +325,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     </header>
 
     <div class="stats-bar">
+      <div class="stat"><span class="stat-label">Model</span><span class="stat-value" id="s-models">—</span></div>
       <div class="stat"><span class="stat-label">Total Prompts</span><span class="stat-value" id="s-prompts">0</span></div>
       <div class="stat"><span class="stat-label">Est Cost</span><span class="stat-value credits" id="s-credits">$0.0000</span></div>
       <div class="stat"><span class="stat-label">Total Tokens</span><span class="stat-value tokens" id="s-tokens">0</span></div>
@@ -343,6 +344,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
             <tr>
               <th>Date / Time</th>
               <th>Prompt</th>
+              <th>Model</th>
               <th>Est Cost</th>
               <th>Duration</th>
               <th>Cached Tokens</th>
@@ -354,7 +356,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
             </tr>
           </thead>
           <tbody id="trace-tbody">
-            <tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>
+            <tr><td colspan="11" class="empty">Waiting for Copilot CLI activity...</td></tr>
           </tbody>
         </table>
       </div>
@@ -562,6 +564,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
   function updateSummaryFromTraces() {
     const arr = Object.values(traces);
+    const modelSet = new Set(arr.map(t => t.model).filter(Boolean));
     summary = {
       totalEntries: arr.length,
       totalCredits: arr.reduce((s, t) => s + (t.aiCredits || 0), 0),
@@ -574,6 +577,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       totalAgentCalls: arr.reduce((s, t) => s + (t.agentCount || 0), 0),
       totalMcpCalls: arr.reduce((s, t) => s + (t.mcpCount || 0), 0),
       totalDurationMs: arr.reduce((s, t) => s + (t.durationMs || 0), 0),
+      models: [...modelSet].sort(),
     };
   }
 
@@ -593,6 +597,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
   function render() {
     if (summary) {
+      document.getElementById('s-models').textContent = (summary.models && summary.models.length) ? summary.models.join(', ') : '—';
       document.getElementById('s-prompts').textContent = summary.totalEntries;
       document.getElementById('s-credits').textContent = fmtCredits(summary.totalCredits);
       document.getElementById('s-tokens').textContent = (summary.totalTokens?.total || 0).toLocaleString();
@@ -608,7 +613,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     const tbody = document.getElementById('trace-tbody');
 
     if (arr.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty">Waiting for Copilot CLI activity...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty">Waiting for Copilot CLI activity...</td></tr>';
       return;
     }
 
@@ -616,6 +621,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       <tr class="${t.status} ${selectedId === t.id ? 'selected' : ''}" onclick="selectTrace('${t.id}')">
         <td class="td-datetime">${fmtDateTime(t.dateTime)}</td>
         <td class="td-prompt" title="${(t.prompt||'').replace(/"/g,'&quot;')}">${escHtml(truncate(t.prompt||'', 60))}</td>
+        <td class="td-model">${escHtml(t.model || '—')}</td>
         <td class="td-credits" onclick="event.stopPropagation(); showCreditDetail('${t.id}')">${fmtCredits(t.aiCredits)}</td>
         <td class="td-duration">${fmtDuration(t.durationMs)}</td>
         <td class="td-tokens"><span class="tok-cached">${t.tokens?.cached||0}</span></td>
