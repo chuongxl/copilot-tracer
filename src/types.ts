@@ -27,6 +27,7 @@ export interface TraceEntry {
   prompt: string;
   response?: string;
   reasoning?: string;
+  model?: string;
   tokens: TokenUsage;
   aiCredits: number;
   durationMs: number;
@@ -48,6 +49,7 @@ export interface SessionSummary {
   totalSkillCalls: number;
   totalAgentCalls: number;
   totalMcpCalls: number;
+  models: string[];
 }
 
 export interface Project {
