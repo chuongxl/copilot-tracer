@@ -188,6 +188,7 @@ async function verifyCopilotUnaffected() {
   const traces = await res.json();
   check('Copilot invoke_agent spans still produce a trace', traces.length === 1, traces.length);
   check('Copilot token usage is unchanged', traces[0]?.tokens.input === 321, traces[0]?.tokens);
+  check('Copilot invoke_agent trace captures model', traces[0]?.model === 'gpt-5', traces[0]?.model);
 }
 
 /**

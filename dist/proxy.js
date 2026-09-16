@@ -136,8 +136,10 @@ export function handleAcpMessage(sessionId, msg, direction) {
             else if (updateType === 'usage_update' || updateType === 'token_usage') {
                 // Token usage update
                 const usage = (update.usage ?? update.tokens ?? {});
-                const model = String(update.model ?? update.modelId ?? 'default');
-                active.entry.model = model;
+                const rawModel = update.model ?? update.modelId;
+                const model = String(rawModel ?? 'default');
+                if (rawModel)
+                    active.entry.model = model;
                 active.entry.tokens = {
                     input: usage.input_tokens ?? usage.prompt_tokens ?? active.entry.tokens.input,
                     output: usage.output_tokens ?? usage.completion_tokens ?? active.entry.tokens.output,

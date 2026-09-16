@@ -553,6 +553,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
         dateTime: nanoToIso(span.startTimeUnixNano),
         prompt: promptText || `[agent turn ${spanId.slice(0, 8)}]`,
         response: responseText || undefined,
+        model: getStringAttr(attrs, 'model', 'gen_ai.request.model'),
         tokens: {
           input: inputTokens,
           output: outputTokens,
@@ -610,7 +611,9 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
 
     // ── chat span = LLM call — extract token usage + prompt/response ──────
     if (spanName.startsWith('chat ') || spanName === 'chat') {
-      const model = String(getAttr(attrs, 'gen_ai.request.model') ?? spanName.replace('chat ', ''));
+      const rawModel = getAttr(attrs, 'gen_ai.request.model')
+        ?? (spanName.startsWith('chat ') ? spanName.slice(5) : undefined);
+      const model = rawModel !== undefined ? String(rawModel) : '';
       const inputTokens  = Number(getAttr(attrs, 'gen_ai.usage.input_tokens')  ?? 0);
       const outputTokens = Number(getAttr(attrs, 'gen_ai.usage.output_tokens') ?? 0);
       const cachedTokens = Number(getAttr(attrs, 'gen_ai.usage.cache_read_input_tokens') ?? 0);
@@ -647,7 +650,7 @@ function processSpans(spans: OtlpSpan[], sessionId: string, projectId?: string, 
           id: spanId,
           sessionId,
           dateTime: nanoToIso(span.startTimeUnixNano),
-          prompt: promptText || `[LLM call: ${model}]`,
+          prompt: promptText || (model ? `[LLM call: ${model}]` : '[LLM call]'),
           response: responseText || undefined,
           model,
           tokens: { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens },
