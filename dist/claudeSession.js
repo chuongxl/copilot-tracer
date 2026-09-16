@@ -149,8 +149,10 @@ function addUsage(ctx, delta) {
     // `cached` are reporting breakdowns of the same traffic, so summing them into `total`
     // would double-count output tokens.
     t.total = t.input + t.output;
-    if (delta.model)
+    if (delta.model) {
         ctx.model = delta.model;
+        ctx.entry.model = delta.model;
+    }
     ctx.entry.aiCredits += delta.credits
         ?? calcClaudeCredits({ input: delta.input ?? 0, output: delta.output ?? 0 }, delta.model ?? ctx.model);
 }

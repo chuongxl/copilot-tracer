@@ -33,6 +33,7 @@ db.exec(`
     prompt TEXT NOT NULL,
     response TEXT,
     reasoning TEXT,
+    model TEXT,
     tokens_input INTEGER DEFAULT 0,
     tokens_output INTEGER DEFAULT 0,
     tokens_cached INTEGER DEFAULT 0,
@@ -61,6 +62,10 @@ try {
 catch { }
 try {
     db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE traces ADD COLUMN model TEXT').run();
 }
 catch { }
 export function ensureProject(projectPath, repoUrl) {
@@ -173,12 +178,12 @@ export function getDashboard(page = 1, pageSize = 12) {
 export function upsertTrace(entry) {
     db.prepare(`
     INSERT OR REPLACE INTO traces (
-      id, session_id, date_time, prompt, response, reasoning,
+      id, session_id, date_time, prompt, response, reasoning, model,
       tokens_input, tokens_output, tokens_cached, tokens_reasoning, tokens_written, tokens_total,
       ai_credits, duration_ms, tool_calls,
       skill_count, agent_count, mcp_count, status, error
     ) VALUES (
-      @id, @sessionId, @dateTime, @prompt, @response, @reasoning,
+      @id, @sessionId, @dateTime, @prompt, @response, @reasoning, @model,
       @tokensInput, @tokensOutput, @tokensCached, @tokensReasoning, @tokensWritten, @tokensTotal,
       @aiCredits, @durationMs, @toolCalls,
       @skillCount, @agentCount, @mcpCount, @status, @error
@@ -190,6 +195,7 @@ export function upsertTrace(entry) {
         prompt: entry.prompt,
         response: entry.response ?? null,
         reasoning: entry.reasoning ?? null,
+        model: entry.model ?? null,
         tokensInput: entry.tokens.input,
         tokensOutput: entry.tokens.output,
         tokensCached: entry.tokens.cached,
@@ -236,6 +242,7 @@ export function getSessionSummary(sessionId) {
       SUM(mcp_count) as mcps
     FROM traces WHERE session_id = ?
   `).get(sessionId);
+    const models = db.prepare(`SELECT DISTINCT model FROM traces WHERE session_id = ? AND model IS NOT NULL AND model != '' ORDER BY model`).all(sessionId).map(r => r.model);
     const tokens = {
         input: stats.input || 0,
         output: stats.output || 0,
@@ -254,6 +261,7 @@ export function getSessionSummary(sessionId) {
         totalSkillCalls: stats.skills || 0,
         totalAgentCalls: stats.agents || 0,
         totalMcpCalls: stats.mcps || 0,
+        models,
     };
 }
 function rowToEntry(row) {
@@ -264,6 +272,7 @@ function rowToEntry(row) {
         prompt: row.prompt,
         response: row.response,
         reasoning: row.reasoning,
+        model: row.model ?? undefined,
         tokens: {
             input: row.tokens_input || 0,
             output: row.tokens_output || 0,
@@ -314,6 +323,8 @@ export function getProjectSessionSummary(projectId) {
     JOIN sessions s ON s.id = t.session_id
     WHERE s.project_id = ?
   `).get(projectId);
+    const models = db.prepare(`SELECT DISTINCT t.model FROM traces t JOIN sessions s ON s.id = t.session_id
+     WHERE s.project_id = ? AND t.model IS NOT NULL AND t.model != '' ORDER BY t.model`).all(projectId).map(r => r.model);
     return {
         sessionId: projectId,
         startedAt: '',
@@ -331,5 +342,6 @@ export function getProjectSessionSummary(projectId) {
         totalSkillCalls: stats.skills || 0,
         totalAgentCalls: stats.agents || 0,
         totalMcpCalls: stats.mcps || 0,
+        models,
     };
 }
