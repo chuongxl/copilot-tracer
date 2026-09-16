@@ -29,6 +29,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
     head: [
       chalk.cyan('Date / Time'),
       chalk.cyan('Prompt'),
+      chalk.cyan('Model'),
       chalk.cyan('Est Cost'),
       chalk.cyan('Duration'),
       chalk.cyan('Tokens\nCached|Written|Reason'),
@@ -36,7 +37,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
       chalk.cyan('Agents'),
       chalk.cyan('MCPs'),
     ],
-    colWidths: [20, 40, 12, 10, 26, 8, 8, 8],
+    colWidths: [20, 40, 14, 12, 10, 26, 8, 8, 8],
     style: { head: [], border: ['grey'] },
     wordWrap: true,
   });
@@ -47,6 +48,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
     table.push([
       chalk.bold.white('TOTALS'),
       chalk.bold.white(`${summary.totalEntries} prompts`),
+      chalk.bold.white(summary.models.length ? summary.models.join(', ') : '—'),
       chalk.bold.yellow(fmtCredits(summary.totalCredits)),
       chalk.bold.white(fmtDuration(summary.totalDurationMs)),
       chalk.bold.white(`${t.cached} | ${t.written} | ${t.reasoning}`),
@@ -56,7 +58,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
     ]);
 
     // divider
-    table.push([{ colSpan: 8, content: chalk.grey('─'.repeat(130)) }]);
+    table.push([{ colSpan: 9, content: chalk.grey('─'.repeat(130)) }]);
   }
 
   // Data rows
@@ -68,6 +70,7 @@ export function renderConsoleTable(entries: TraceEntry[], summary?: SessionSumma
     table.push([
       statusColor(e.status, dt),
       truncate(e.prompt, 38),
+      truncate(e.model || '—', 12),
       chalk.yellow(fmtCredits(e.aiCredits)),
       fmtDuration(e.durationMs),
       tokenStr + (tools ? chalk.grey(`\n[${truncate(tools, 22)}]`) : ''),
