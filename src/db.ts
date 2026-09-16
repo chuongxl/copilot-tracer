@@ -38,6 +38,7 @@ db.exec(`
     prompt TEXT NOT NULL,
     response TEXT,
     reasoning TEXT,
+    model TEXT,
     tokens_input INTEGER DEFAULT 0,
     tokens_output INTEGER DEFAULT 0,
     tokens_cached INTEGER DEFAULT 0,
@@ -60,6 +61,7 @@ db.exec(`
 try { db.prepare('ALTER TABLE projects ADD COLUMN repo_url TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE projects ADD COLUMN local_path TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run(); } catch {}
+try { db.prepare('ALTER TABLE traces ADD COLUMN model TEXT').run(); } catch {}
 
 export function ensureProject(projectPath: string, repoUrl?: string): string {
   const id = 'project:' + projectPath;
@@ -182,12 +184,12 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
 export function upsertTrace(entry: TraceEntry): void {
   db.prepare(`
     INSERT OR REPLACE INTO traces (
-      id, session_id, date_time, prompt, response, reasoning,
+      id, session_id, date_time, prompt, response, reasoning, model,
       tokens_input, tokens_output, tokens_cached, tokens_reasoning, tokens_written, tokens_total,
       ai_credits, duration_ms, tool_calls,
       skill_count, agent_count, mcp_count, status, error
     ) VALUES (
-      @id, @sessionId, @dateTime, @prompt, @response, @reasoning,
+      @id, @sessionId, @dateTime, @prompt, @response, @reasoning, @model,
       @tokensInput, @tokensOutput, @tokensCached, @tokensReasoning, @tokensWritten, @tokensTotal,
       @aiCredits, @durationMs, @toolCalls,
       @skillCount, @agentCount, @mcpCount, @status, @error
@@ -199,6 +201,7 @@ export function upsertTrace(entry: TraceEntry): void {
     prompt: entry.prompt,
     response: entry.response ?? null,
     reasoning: entry.reasoning ?? null,
+    model: entry.model ?? null,
     tokensInput: entry.tokens.input,
     tokensOutput: entry.tokens.output,
     tokensCached: entry.tokens.cached,
@@ -249,6 +252,10 @@ export function getSessionSummary(sessionId: string): SessionSummary | null {
     FROM traces WHERE session_id = ?
   `).get(sessionId) as Record<string, number>;
 
+  const models = (db.prepare(
+    `SELECT DISTINCT model FROM traces WHERE session_id = ? AND model IS NOT NULL AND model != '' ORDER BY model`
+  ).all(sessionId) as { model: string }[]).map(r => r.model);
+
   const tokens: TokenUsage = {
     input: stats.input || 0,
     output: stats.output || 0,
@@ -268,6 +275,7 @@ export function getSessionSummary(sessionId: string): SessionSummary | null {
     totalSkillCalls: stats.skills || 0,
     totalAgentCalls: stats.agents || 0,
     totalMcpCalls: stats.mcps || 0,
+    models,
   };
 }
 
@@ -279,6 +287,7 @@ function rowToEntry(row: Record<string, unknown>): TraceEntry {
     prompt: row.prompt as string,
     response: row.response as string | undefined,
     reasoning: row.reasoning as string | undefined,
+    model: (row.model as string | null) ?? undefined,
     tokens: {
       input: (row.tokens_input as number) || 0,
       output: (row.tokens_output as number) || 0,
@@ -333,6 +342,11 @@ export function getProjectSessionSummary(projectId: string): SessionSummary | nu
     WHERE s.project_id = ?
   `).get(projectId) as Record<string, number>;
 
+  const models = (db.prepare(
+    `SELECT DISTINCT t.model FROM traces t JOIN sessions s ON s.id = t.session_id
+     WHERE s.project_id = ? AND t.model IS NOT NULL AND t.model != '' ORDER BY t.model`
+  ).all(projectId) as { model: string }[]).map(r => r.model);
+
   return {
     sessionId: projectId,
     startedAt: '',
@@ -350,5 +364,6 @@ export function getProjectSessionSummary(projectId: string): SessionSummary | nu
     totalSkillCalls: stats.skills || 0,
     totalAgentCalls: stats.agents || 0,
     totalMcpCalls: stats.mcps || 0,
+    models,
   };
 }
