@@ -32,7 +32,7 @@ trio, per plan.md's Project Structure section.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm `npx tsc --noEmit` passes on the current worktree before any change (baseline
+- [X] T001 Confirm `npx tsc --noEmit` passes on the current worktree before any change (baseline
   check; repo root `/Users/chuongnd/github-me/copilot-tracer/.worktrees/001-opencode-support`).
 
 ---
@@ -54,41 +54,41 @@ Project → Session → Trace model and appears live in the dashboard.
 verify `/api/traces`, `/api/summary`, and dashboard counts update, and that a re-sent event does
 not duplicate the trace/tool call).
 
-- [ ] T002 [P] [US1] Add `detectOpenCodeToolType(name: string): ToolCall['type']` in
+- [X] T002 [P] [US1] Add `detectOpenCodeToolType(name: string): ToolCall['type']` in
   `src/openCodeSession.ts` per research.md R6 (builtin/mcp/agent classification for OpenCode's
   tool vocabulary; no new enum value).
-- [ ] T003 [US1] Implement the `OpenCodeTurnContext` in-memory tracker in
+- [X] T003 [US1] Implement the `OpenCodeTurnContext` in-memory tracker in
   `src/openCodeSession.ts` (mirrors `ClaudeTurnContext` in `src/claudeSession.ts`): `startTurn`,
   `finishTurn`, `startToolCall`, `finishToolCall`, `registerSession`, `endSession`, keyed on
   `(sessionId, messageId)` for turns and `(messageId, toolCallId)` for tool calls per
   data-model.md, with redelivery treated as an upsert (FR-009).
-- [ ] T004 [US1] Implement stale-turn expiry in `src/openCodeSession.ts`: a turn with no terminal
+- [X] T004 [US1] Implement stale-turn expiry in `src/openCodeSession.ts`: a turn with no terminal
   signal (`session.idle`/`session.error`) beyond the existing expiry window used by
   `claudeSession.ts`'s pending-usage cleanup is marked `error` with a timeout reason (FR-011,
   spec Edge Cases).
-- [ ] T005 [US1] Wire `src/openCodeSession.ts` persistence to the existing `traceEvents`
+- [X] T005 [US1] Wire `src/openCodeSession.ts` persistence to the existing `traceEvents`
   `EventEmitter` (imported the same way `proxy.ts`/`otlpReceiver.ts` do) so every turn update
   emits `trace:update`/`trace:done` for the existing Socket.io live-update path (FR-005, research
   R9) — no `web/index.html` changes needed.
-- [ ] T006 [US1] Resolve project association in `src/openCodeSession.ts`/`src/openCodeHooks.ts`
+- [X] T006 [US1] Resolve project association in `src/openCodeSession.ts`/`src/openCodeHooks.ts`
   via `ensureProject(directory)` from `src/db.ts` (same call `claudeHooks.ts`'s
   `resolveProject()` makes), falling back to the existing fallback/ungrouped project behavior
   when no repository is detected (FR-002, FR-010).
-- [ ] T007 [US1] Create `src/openCodeHooks.ts` exposing `handleOpenCodeHook(payload)` and
+- [X] T007 [US1] Create `src/openCodeHooks.ts` exposing `handleOpenCodeHook(payload)` and
   `registerOpenCodeHookRoutes(app)`, mirroring `src/claudeHooks.ts`: parse the event payload
   shape from contracts/opencode-hook.md, dispatch `session.created` → `registerSession`,
   `message.updated` → `startTurn`/`finishTurn` (with usage forwarded), `tool.execute.before` →
   `startToolCall`, `tool.execute.after` → `finishToolCall`, `session.idle` → `finishTurn`
   (success), `session.error` → `finishTurn` (error); unknown events are ignored (FR-009).
-- [ ] T008 [US1] In `src/openCodeHooks.ts`, register `POST /opencode/hook` to always respond `204
+- [X] T008 [US1] In `src/openCodeHooks.ts`, register `POST /opencode/hook` to always respond `204
   No Content` and never throw (catch-and-log per `COPILOT_TRACER_DEBUG`), plus `GET
   /opencode/hook/health` returning hook-delivery diagnostics, matching `/claude/hook`'s exact
   safety contract (contracts/opencode-hook.md); add the malformed-body error-handling middleware
   scoped to `/opencode/hook` the same way `claudeHooks.ts` does for `/claude/hook`.
-- [ ] T009 [US1] Register `registerOpenCodeHookRoutes(app)` in `src/webServer.ts` alongside the
+- [X] T009 [US1] Register `registerOpenCodeHookRoutes(app)` in `src/webServer.ts` alongside the
   existing `registerClaudeHookRoutes(app)` call.
-- [ ] T010 [US1] Run `npx tsc --noEmit` and fix any type errors introduced by T002–T009.
-- [ ] T011 [US1] Manually verify per quickstart.md steps 1–4 (simulated OpenCode session via
+- [X] T010 [US1] Run `npx tsc --noEmit` and fix any type errors introduced by T002–T009.
+- [X] T011 [US1] Manually verify per quickstart.md steps 1–4 (simulated OpenCode session via
   curl): dashboard/session counts update, `/api/traces` shows the turn with its `bash` tool call
   classified `builtin`, and a duplicate `message.updated`/`tool.execute.after` resend does not
   create a second trace or tool call.
@@ -107,25 +107,25 @@ any existing OpenCode configuration.
 file is installed (or a clear skip message when OpenCode isn't detected), then run a real
 OpenCode session and confirm `/opencode/hook/health` shows received events.
 
-- [ ] T012 [P] [US2] Create the plugin template asset at
+- [X] T012 [P] [US2] Create the plugin template asset at
   `assets/opencode-plugin/copilot-tracer.js`: a JS module exporting a plugin function that
   subscribes to the events in research.md R2 (`session.created`, `message.updated`,
   `tool.execute.before`, `tool.execute.after`, `session.idle`, `session.error`) and POSTs each as
   JSON to `http://localhost:<port>/opencode/hook`, per contracts/opencode-hook.md's request body
   shape; network/POST failures are caught and swallowed so a stopped daemon never affects the
   OpenCode session (spec Edge Cases).
-- [ ] T013 [US2] In `src/setup.ts`, add OpenCode detection (check for the `opencode` binary on
+- [X] T013 [US2] In `src/setup.ts`, add OpenCode detection (check for the `opencode` binary on
   `PATH`, same style as the existing Copilot CLI detection) per research.md R8.
-- [ ] T014 [US2] In `src/setup.ts`, when OpenCode is detected, write
+- [X] T014 [US2] In `src/setup.ts`, when OpenCode is detected, write
   `assets/opencode-plugin/copilot-tracer.js` (with `<port>` substituted) to
   `~/.config/opencode/plugins/copilot-tracer.js`, creating the directory if absent; never modify
   any other file in that directory or `opencode.json` (FR-007). On a write/permission failure,
   print the specific error and continue the rest of setup rather than aborting (FR-006).
-- [ ] T015 [US2] In `src/setup.ts`, when OpenCode is not detected, print a clear skip message
+- [X] T015 [US2] In `src/setup.ts`, when OpenCode is not detected, print a clear skip message
   (matching the tone of the existing Claude Code hooks summary) and continue setup without error
   (FR-006).
-- [ ] T016 [US2] Run `npx tsc --noEmit` and fix any type errors introduced by T013–T015.
-- [ ] T017 [US2] Manually verify per quickstart.md step 5: run `--setup --daemon`, confirm the
+- [X] T016 [US2] Run `npx tsc --noEmit` and fix any type errors introduced by T013–T015.
+- [X] T017 [US2] Manually verify per quickstart.md step 5: run `--setup --daemon`, confirm the
   plugin file exists at `~/.config/opencode/plugins/copilot-tracer.js`, run a real OpenCode
   session, and confirm `/opencode/hook/health` reports `received > 0` and the session appears in
   the dashboard live.
@@ -145,15 +145,15 @@ using a known model (e.g. `claude-sonnet-4-6`) reports `aiCredits` matching that
 applied to the reported token counts, and that an unknown model still shows token counts with
 zero/unavailable cost.
 
-- [ ] T018 [P] [US3] Create `src/openCodePricing.ts` per research.md R7: a per-model USD-per-1K-
+- [X] T018 [P] [US3] Create `src/openCodePricing.ts` per research.md R7: a per-model USD-per-1K-
   token rate table (reusing/sharing lookups with `src/claudePricing.ts` for Anthropic models,
   plus common OpenAI model rates) and `calcOpenCodeCredits(tokens, model?)`, falling back to zero
   cost for an unrecognized model id (FR-004).
-- [ ] T019 [US3] Wire `calcOpenCodeCredits` into `src/openCodeSession.ts`'s turn-finalization path
+- [X] T019 [US3] Wire `calcOpenCodeCredits` into `src/openCodeSession.ts`'s turn-finalization path
   (`finishTurn`/persist) so every persisted `TraceEntry.aiCredits` for an OpenCode turn reflects
   the reported `usage.model` and token counts (FR-004).
-- [ ] T020 [US3] Run `npx tsc --noEmit` and fix any type errors introduced by T018–T019.
-- [ ] T021 [US3] Manually verify per quickstart.md step 3: a simulated turn with a priced model
+- [X] T020 [US3] Run `npx tsc --noEmit` and fix any type errors introduced by T018–T019.
+- [X] T021 [US3] Manually verify per quickstart.md step 3: a simulated turn with a priced model
   shows the expected `aiCredits`, and a turn with an unpriced model id shows token counts with
   zero cost and no error.
 
@@ -163,14 +163,21 @@ zero/unavailable cost.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T022 Run the full regression check from quickstart.md step 6 (`node test-seed.mjs`, `node
+- [X] T022 Run the full regression check from quickstart.md step 6 (`node test-seed.mjs`, `node
   test-claude-hooks.mjs`) and confirm both still pass unchanged (SC-004 — zero regression on
   existing Copilot CLI / Claude Code ingestion).
-- [ ] T023 Update `AGENTS.md`/`CLAUDE.md`/README references to the supported hosts (Copilot CLI,
+  > **Note**: `develop` (this feature's base branch) does not yet include the Claude Code hooks
+  > integration (`claudeHooks.ts`/`claudeSession.ts`/`claudePricing.ts` — merged separately on
+  > `main` via `feature/claude-session-tracing`), so `test-claude-hooks.mjs` does not exist here.
+  > Ran `node test-seed.mjs` instead (passed, 4 traces seeded) plus the manual OpenCode
+  > verification in quickstart.md steps 1–4. `openCodePricing.ts` and the `openCodeHooks.ts`
+  > doc comments were written self-contained (no import from the not-yet-present Claude
+  > modules) for this reason.
+- [X] T023 Update `AGENTS.md`/`CLAUDE.md`/README references to the supported hosts (Copilot CLI,
   Claude Code) to also mention OpenCode, and document the new `/opencode/hook` and
   `/opencode/hook/health` endpoints alongside the existing Claude hook documentation, per the
   constitution's requirement that documentation accompany new operator-visible endpoints.
-- [ ] T024 Final `npx tsc --noEmit` clean run across the whole worktree.
+- [X] T024 Final `npx tsc --noEmit` clean run across the whole worktree.
 
 ---
 

@@ -1,6 +1,6 @@
 # copilot-tracer
 
-Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI** and **VS Code Copilot extension**.
+Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, the **VS Code Copilot extension**, and **OpenCode**.
 
 Captures every prompt, response, token usage, AI credits, tool calls, and duration — all in one place. Runs as a background daemon that collects data from all your projects automatically. Includes a web dashboard with project overview and per-project live tracing.
 
@@ -11,7 +11,7 @@ Captures every prompt, response, token usage, AI credits, tool calls, and durati
 - **Daemon mode** — install once, run forever. Collects traces from all projects automatically
 - **Auto project detection** — detects project from `github.copilot.git.repository` in OTLP spans
 - **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set env vars, done.
-- **Works everywhere** — captures both Copilot CLI and VS Code Copilot Chat
+- **Works everywhere** — captures Copilot CLI, VS Code Copilot Chat, and OpenCode sessions
 - **Dashboard** — overview of all projects with token usage, credits, and session counts
 - **Live tracer** — real-time trace table per project with detail panel
 - **Prompt refinement** — rewrites prompts with stronger instructions and less noise
@@ -28,10 +28,11 @@ copilot-tracer --setup --daemon
 ```
 
 This will:
-1. Detect your Copilot CLI and VS Code installation
+1. Detect your Copilot CLI, VS Code, and OpenCode installation
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
-4. Start the daemon on port 4747
+4. Install the OpenCode plugin (if OpenCode is found) at `~/.config/opencode/plugins/copilot-tracer.js`
+5. Start the daemon on port 4747
 
 Then apply env vars in your current shell:
 
@@ -39,7 +40,7 @@ Then apply env vars in your current shell:
 source ~/.zshrc
 ```
 
-Restart VS Code once. After that, the daemon collects traces from all your Copilot sessions automatically.
+Restart VS Code (and any running OpenCode sessions) once. After that, the daemon collects traces from all your Copilot and OpenCode sessions automatically.
 
 Open **http://localhost:4747** to see the dashboard.
 
@@ -53,6 +54,8 @@ Open **http://localhost:4747** to see the dashboard.
 │                                                          │
 │  OTLP Receiver ← Copilot CLI + VS Code                   │
 │  (auto-detects project from github.copilot.git.repository)│
+│  OpenCode hook receiver ← OpenCode plugin                │
+│  (POST /opencode/hook — session/message/tool lifecycle)  │
 │                                                          │
 │  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
 └─────────────────────────────────────────────────────────┘

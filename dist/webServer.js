@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary } from './db.js';
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
+import { registerOpenCodeHookRoutes } from './openCodeHooks.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function startWebServer(port = 4747, sessionId, projectId) {
     const app = express();
@@ -17,6 +18,8 @@ export function startWebServer(port = 4747, sessionId, projectId) {
     // Register OTLP receiver routes
     app.use(express.json({ limit: '10mb' }));
     registerOtlpRoutes(app, sessionId ?? 'default', projectId);
+    // Register OpenCode plugin hook receiver routes (additive; no impact on OTLP/ACP paths)
+    registerOpenCodeHookRoutes(app);
     // API
     app.get('/api/traces', (req, res) => {
         const sid = req.query.sessionId || undefined; // undefined = all sessions
