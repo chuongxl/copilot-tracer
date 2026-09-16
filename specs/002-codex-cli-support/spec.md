@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-16
 
-**Status**: Draft
+**Status**: completed
 
 **Input**: User description: "Add support for tracing OpenAI Codex CLI sessions in copilot-tracer, the same way GitHub Copilot CLI and Claude Code sessions are already traced, so users running Codex alongside those tools get unified project/session/token/cost visibility in the dashboard. Codex CLI has no hooks-based lifecycle API; it exposes session and turn events (prompts, tool decisions, token usage, turn cost) only through its own OpenTelemetry (OTLP) log/trace exporter, configured via a `[otel]` block in `~/.codex/config.toml` (not environment variables alone)."
 
