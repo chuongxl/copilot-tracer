@@ -39,6 +39,7 @@ interface ClaudeHookPayload {
   tool_response?: unknown;
   tool_error?: unknown;
   error?: unknown;
+  error_details?: unknown;
   last_assistant_message?: string;
   reason?: string;
   source?: string;
@@ -52,13 +53,23 @@ function str(value: unknown): string | undefined {
 
 function errorText(payload: ClaudeHookPayload): string | undefined {
   const raw = payload.tool_error ?? payload.error;
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw === 'string') return raw || undefined;
-  try {
-    return JSON.stringify(raw);
-  } catch {
-    return String(raw);
+  let code: string | undefined;
+  if (raw !== undefined && raw !== null) {
+    if (typeof raw === 'string') code = raw || undefined;
+    else {
+      try {
+        code = JSON.stringify(raw);
+      } catch {
+        code = String(raw);
+      }
+    }
   }
+  // `error` is a terse machine code like "authentication_failed". On its own it leaves the
+  // user guessing why a turn produced no tokens or tools, so append whatever human-readable
+  // detail Claude sent alongside it.
+  const detail = str(payload.error_details) ?? str(payload.last_assistant_message);
+  if (code && detail && !code.includes(detail)) return `${code}: ${detail}`;
+  return code ?? detail;
 }
 
 /**
@@ -150,11 +161,61 @@ export function handleClaudeHook(payload: ClaudeHookPayload): void {
   }
 }
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+// When hooks silently don't fire there is otherwise no way to tell "Claude never
+// called us" from "Claude called us and we ignored it". This records what actually
+// arrived so `--check-claude` (and the health endpoint) can answer that question.
+
+interface HookStats {
+  total: number;
+  byEvent: Record<string, number>;
+  sessions: Set<string>;
+  firstAt?: string;
+  lastAt?: string;
+  lastPayload?: { event?: string; sessionId?: string; promptId?: string; tool?: string };
+}
+
+const stats: HookStats = { total: 0, byEvent: {}, sessions: new Set() };
+
+function recordHook(payload: ClaudeHookPayload): void {
+  const event = str(payload.hook_event_name) ?? 'unknown';
+  stats.total++;
+  stats.byEvent[event] = (stats.byEvent[event] ?? 0) + 1;
+  const sid = str(payload.session_id);
+  if (sid) stats.sessions.add(sid);
+  const now = new Date().toISOString();
+  stats.firstAt ??= now;
+  stats.lastAt = now;
+  stats.lastPayload = {
+    event,
+    sessionId: sid,
+    promptId: str(payload.prompt_id),
+    tool: str(payload.tool_name),
+  };
+  if (process.env.COPILOT_TRACER_DEBUG === '1') {
+    console.log(`[claude-hook] ${event} session=${sid ?? '?'} prompt=${str(payload.prompt_id) ?? '?'}${payload.tool_name ? ' tool=' + payload.tool_name : ''}`);
+  }
+}
+
+export function getClaudeHookStats() {
+  return {
+    received: stats.total,
+    byEvent: stats.byEvent,
+    sessionCount: stats.sessions.size,
+    sessions: [...stats.sessions].slice(-10),
+    firstAt: stats.firstAt,
+    lastAt: stats.lastAt,
+    lastPayload: stats.lastPayload,
+  };
+}
+
 export function registerClaudeHookRoutes(app: Express): void {
   // Claude Code posts every subscribed lifecycle event here.
   app.post('/claude/hook', (req: Request, res: Response) => {
     try {
-      handleClaudeHook((req.body ?? {}) as ClaudeHookPayload);
+      const payload = (req.body ?? {}) as ClaudeHookPayload;
+      recordHook(payload);
+      handleClaudeHook(payload);
     } catch (err) {
       console.error('[claude-hook] failed to process event:', err);
     }
@@ -162,9 +223,10 @@ export function registerClaudeHookRoutes(app: Express): void {
     res.status(204).end();
   });
 
-  // Lets `--setup` and users confirm the receiver is reachable.
+  // Lets `--setup` and users confirm the receiver is reachable, and shows whether
+  // Claude has actually delivered anything to it.
   app.get('/claude/hook/health', (_req: Request, res: Response) => {
-    res.json({ ok: true, receiver: 'claude-hooks' });
+    res.json({ ok: true, receiver: 'claude-hooks', ...getClaudeHookStats() });
   });
 
   // A malformed or oversized body fails inside the express.json() middleware, before the
