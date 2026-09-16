@@ -292,9 +292,14 @@ export function patchClaudeSettings(settingsPath: string, port: number): { actio
 
 function detectCopilotCli(): { found: boolean; path?: string; version?: string } {
   try {
-    const p = execSync('which copilot', { encoding: 'utf8' }).trim();
-    const v = execSync('copilot --version 2>/dev/null || true', { encoding: 'utf8' }).trim();
-    return { found: true, path: p, version: v.split('\n')[0] };
+    const p = execSync(isWindows() ? 'where copilot' : 'which copilot', { encoding: 'utf8' }).trim().split('\n')[0];
+    let version: string | undefined;
+    try {
+      version = execSync('copilot --version', { encoding: 'utf8' }).trim().split('\n')[0];
+    } catch {
+      // version lookup is best-effort; presence of the binary is what matters
+    }
+    return { found: true, path: p, version };
   } catch {
     return { found: false };
   }

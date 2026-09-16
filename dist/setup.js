@@ -5,8 +5,9 @@
  *  1. Detect copilot CLI (which copilot)
  *  2. Detect VS Code installation + built-in copilot (v1.99+)
  *  3. Inject OTEL env vars into:
- *     - Shell profile (~/.zshrc / ~/.bashrc / ~/.zprofile)
- *     - VS Code settings.json (terminal.integrated.env.osx)
+ *     - Shell profile: ~/.zshrc / ~/.bashrc / ~/.zprofile (macOS/Linux),
+ *       $PROFILE — Documents\PowerShell\Microsoft.PowerShell_profile.ps1 (Windows)
+ *     - VS Code settings.json (terminal.integrated.env.osx / .linux / .windows)
  *  4. Print a summary and next steps
  */
 import { execSync } from 'child_process';
@@ -23,7 +24,10 @@ const OTEL_TRACES_EXPORTER_KEY = 'OTEL_TRACES_EXPORTER';
 const OTEL_PROTOCOL_KEY = 'OTEL_EXPORTER_OTLP_PROTOCOL';
 const OTEL_LOG_PROMPTS_KEY = 'OTEL_LOG_USER_PROMPTS';
 const OTEL_LOG_RESPONSES_KEY = 'OTEL_LOG_ASSISTANT_RESPONSES';
-function otelEnvBlock(port) {
+function isWindows() {
+    return process.platform === 'win32';
+}
+function otelEnvBlockPosix(port) {
     return [
         `# >>> copilot-tracer OTLP config (auto-added) >>>`,
         `export ${OTEL_ENDPOINT_KEY}=http://localhost:${port}`,
@@ -74,6 +78,53 @@ function otelEnvBlock(port) {
         `}`,
         `# <<< copilot-tracer <<<`,
     ].join('\n');
+}
+function otelEnvBlockPowerShell(port) {
+    return [
+        `# >>> copilot-tracer OTLP config (auto-added) >>>`,
+        `$env:${OTEL_ENDPOINT_KEY} = "http://localhost:${port}"`,
+        `$env:${OTEL_CONTENT_KEY} = "true"`,
+        `$env:${OTEL_ENABLED_KEY} = "true"`,
+        `$env:${CLAUDE_TELEMETRY_KEY} = "1"`,
+        `$env:${CLAUDE_TRACES_KEY} = "1"`,
+        `$env:${OTEL_LOGS_EXPORTER_KEY} = "otlp"`,
+        `$env:${OTEL_TRACES_EXPORTER_KEY} = "otlp"`,
+        `$env:${OTEL_PROTOCOL_KEY} = "http/json"`,
+        `$env:${OTEL_LOG_PROMPTS_KEY} = "1"`,
+        `$env:${OTEL_LOG_RESPONSES_KEY} = "1"`,
+        ``,
+        `# Tag every copilot prompt with the terminal folder it ran from, so the`,
+        `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
+        `# so we inject it via OTEL_RESOURCE_ATTRIBUTES (percent-encoded).`,
+        `function copilot {`,
+        `    $_wd = (Get-Location).Path.Replace('\\','/')`,
+        `    $_wd = [uri]::EscapeDataString($_wd).Replace('%2F','/')`,
+        `    if ($env:OTEL_RESOURCE_ATTRIBUTES) {`,
+        `        $parts = $env:OTEL_RESOURCE_ATTRIBUTES -split ',' | Where-Object { $_ -notmatch '^github\\.copilot\\.working_dir=' }`,
+        `        $env:OTEL_RESOURCE_ATTRIBUTES = $parts -join ','`,
+        `        if ($env:OTEL_RESOURCE_ATTRIBUTES) { $env:OTEL_RESOURCE_ATTRIBUTES += ',' }`,
+        `    }`,
+        `    $env:OTEL_RESOURCE_ATTRIBUTES = "$($env:OTEL_RESOURCE_ATTRIBUTES)github.copilot.working_dir=$_wd"`,
+        `    $cmd = Get-Command copilot -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1`,
+        `    if ($cmd) { & $cmd.Source @args } else { & copilot.cmd @args }`,
+        `}`,
+        ``,
+        `function claude {`,
+        `    $_wd = (Get-Location).Path.Replace('\\','/')`,
+        `    $_wd = [uri]::EscapeDataString($_wd).Replace('%2F','/')`,
+        `    if ($env:OTEL_RESOURCE_ATTRIBUTES) {`,
+        `        $env:OTEL_RESOURCE_ATTRIBUTES += ",claude_code.working_dir=$_wd"`,
+        `    } else {`,
+        `        $env:OTEL_RESOURCE_ATTRIBUTES = "claude_code.working_dir=$_wd"`,
+        `    }`,
+        `    $cmd = Get-Command claude -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1`,
+        `    if ($cmd) { & $cmd.Source @args } else { & claude.cmd @args }`,
+        `}`,
+        `# <<< copilot-tracer <<<`,
+    ].join('\n');
+}
+function otelEnvBlock(port) {
+    return isWindows() ? otelEnvBlockPowerShell(port) : otelEnvBlockPosix(port);
 }
 function vscodeEnvBlock(port) {
     return {
@@ -205,9 +256,15 @@ export function patchClaudeSettings(settingsPath, port) {
 // ── Detection helpers ─────────────────────────────────────────────────────────
 function detectCopilotCli() {
     try {
-        const p = execSync('which copilot', { encoding: 'utf8' }).trim();
-        const v = execSync('copilot --version 2>/dev/null || true', { encoding: 'utf8' }).trim();
-        return { found: true, path: p, version: v.split('\n')[0] };
+        const p = execSync(isWindows() ? 'where copilot' : 'which copilot', { encoding: 'utf8' }).trim().split('\n')[0];
+        let version;
+        try {
+            version = execSync('copilot --version', { encoding: 'utf8' }).trim().split('\n')[0];
+        }
+        catch {
+            // version lookup is best-effort; presence of the binary is what matters
+        }
+        return { found: true, path: p, version };
     }
     catch {
         return { found: false };
@@ -225,15 +282,33 @@ function detectVSCode() {
         return { found: true, version, hasBuiltinCopilot };
     }
     catch {
-        // Try app bundle directly
-        const appPath = '/Applications/Visual Studio Code.app';
-        if (fs.existsSync(appPath)) {
+        // Try well-known install locations directly
+        const appPath = process.platform === 'darwin'
+            ? '/Applications/Visual Studio Code.app'
+            : isWindows()
+                ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Microsoft VS Code', 'Code.exe')
+                : null;
+        if (appPath && fs.existsSync(appPath)) {
             return { found: true, hasBuiltinCopilot: true, version: 'unknown (app found)' };
         }
         return { found: false, hasBuiltinCopilot: false };
     }
 }
 function detectShellProfile() {
+    if (isWindows()) {
+        const candidates = [
+            // PowerShell 7+ ($PROFILE for `pwsh`)
+            path.join(os.homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+            // Windows PowerShell 5.1 ($PROFILE for `powershell.exe`)
+            path.join(os.homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'),
+        ];
+        for (const p of candidates) {
+            if (fs.existsSync(p))
+                return p;
+        }
+        // Default to the PowerShell 7+ profile (create it)
+        return candidates[0];
+    }
     const candidates = [
         path.join(os.homedir(), '.zshrc'),
         path.join(os.homedir(), '.zprofile'),
@@ -247,9 +322,21 @@ function detectShellProfile() {
     // Default to .zshrc (create it)
     return path.join(os.homedir(), '.zshrc');
 }
+/** VS Code's per-platform key for `terminal.integrated.env.*`. */
+function getVSCodeEnvKey() {
+    if (process.platform === 'darwin')
+        return 'terminal.integrated.env.osx';
+    if (isWindows())
+        return 'terminal.integrated.env.windows';
+    return 'terminal.integrated.env.linux';
+}
 function getVSCodeSettingsPath() {
     if (process.platform === 'darwin') {
         return path.join(os.homedir(), 'Library/Application Support/Code/User/settings.json');
+    }
+    if (isWindows()) {
+        const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Code', 'User', 'settings.json');
     }
     // Linux (and WSL)
     return path.join(os.homedir(), '.config/Code/User/settings.json');
@@ -258,6 +345,9 @@ function getVSCodeSettingsPath() {
 function patchShellProfile(profilePath, port) {
     const content = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
     const block = otelEnvBlock(port);
+    // The PowerShell profile dir (Documents\PowerShell or \WindowsPowerShell) often
+    // doesn't exist yet — unlike ~/.zshrc's parent, which is always the home dir.
+    fs.mkdirSync(path.dirname(profilePath), { recursive: true });
     // Already has our block?
     if (content.includes('copilot-tracer OTLP config')) {
         // Only skip if the embedded block is byte-identical to what we'd generate now —
@@ -287,7 +377,7 @@ function patchVSCodeSettings(settingsPath, port) {
     catch {
         return { action: 'skipped', reason: 'could not parse settings.json' };
     }
-    const envKey = 'terminal.integrated.env.osx';
+    const envKey = getVSCodeEnvKey();
     const existing = (settings[envKey] ?? {});
     const newEnv = vscodeEnvBlock(port);
     // Already set correctly only if every current key/value is present — checking a
@@ -342,16 +432,17 @@ export function runSetup(port, silent = false) {
     if (profilePath) {
         const result = patchShellProfile(profilePath, port);
         const label = path.basename(profilePath);
+        const reload = isWindows() ? `. ${profilePath}` : `source ${profilePath}`;
         if (result.action === 'added') {
             console.log(`\n${CHECK} Shell profile patched: ${label}`);
             console.log(`   ${ARROW} Added Copilot + Claude Code OTLP env vars`);
             console.log(`   ${ARROW} Added copilot() wrapper — tags each prompt with the terminal folder`);
-            console.log(`   ${ARROW} Run: source ${profilePath}`);
+            console.log(`   ${ARROW} Run: ${reload}`);
         }
         else if (result.action === 'updated') {
             console.log(`\n${CHECK} Shell profile updated: ${label}`);
             console.log(`   ${ARROW} Updated port to ${port} + Claude Code/Copilot OTLP config`);
-            console.log(`   ${ARROW} Run: source ${profilePath}`);
+            console.log(`   ${ARROW} Run: ${reload}`);
         }
         else {
             console.log(`\n${CHECK} Shell profile: already configured (${label})`);
@@ -363,7 +454,7 @@ export function runSetup(port, silent = false) {
         const result = patchVSCodeSettings(settingsPath, port);
         if (result.action === 'added') {
             console.log(`\n${CHECK} VS Code settings patched`);
-            console.log(`   ${ARROW} Added terminal.integrated.env.osx with OTEL vars`);
+            console.log(`   ${ARROW} Added ${getVSCodeEnvKey()} with OTEL vars`);
             console.log(`   ${ARROW} Restart VS Code to apply`);
         }
         else if (result.action === 'updated') {
@@ -411,10 +502,9 @@ export function runSetup(port, silent = false) {
     process.env[OTEL_LOG_RESPONSES_KEY] = '1';
     // 7. Summary
     if (!silent) {
-        const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
         console.log('\n────────────────────────────────────────────────');
         console.log('  One manual step required:\n');
-        console.log(`  source ~/${profileBase}`);
+        console.log(`  ${isWindows() ? `. ${profilePath}` : `source ${profilePath}`}`);
         console.log(`  (opens a new terminal already? — env is already active there)`);
         if (vscode.found)
             console.log('\n  Restart VS Code once to pick up the new terminal env.');
