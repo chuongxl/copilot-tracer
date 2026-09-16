@@ -279,6 +279,10 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   .dash-empty { padding: 60px 24px; text-align: center; color: #8b949e; }
   .dash-empty p { margin-top: 8px; font-size: 12px; }
   .dash-empty code { background: #21262d; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #79c0ff; }
+  .dash-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 0 24px 24px; color: #8b949e; font-size: 12px; }
+  .dash-pagination button { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; cursor: pointer; padding: 6px 10px; }
+  .dash-pagination button:hover:not(:disabled) { border-color: #58a6ff; color: #58a6ff; }
+  .dash-pagination button:disabled { cursor: not-allowed; opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -308,6 +312,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     <div class="dash-totals" id="dash-totals"></div>
     <div class="dash-section-title">Projects</div>
     <div id="dash-projects" class="dash-projects"></div>
+    <div id="dash-pagination" class="dash-pagination"></div>
   </div>
 
   <!-- ═══════════════ LIVE TRACER PAGE ═══════════════ -->
@@ -384,6 +389,8 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   let currentProjectId = null;
   let liveSocket = null;
   let dashboardRefreshPending = false;
+  let dashboardPage = 1;
+  const dashboardPageSize = 12;
 
   // Main socket listens for all trace events — refreshes dashboard in real-time
   // (regardless of active page, so it's fresh when you switch back)
@@ -464,8 +471,10 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
   async function loadDashboard() {
     try {
-      const res = await fetch('/api/dashboard');
+      const res = await fetch(`/api/dashboard?page=${dashboardPage}&pageSize=${dashboardPageSize}`);
+      if (!res.ok) throw new Error(`Dashboard request failed: ${res.status}`);
       const data = await res.json();
+      dashboardPage = data.pagination.page;
       renderDashboard(data);
     } catch (e) {
       console.error('Dashboard load failed:', e);
@@ -494,6 +503,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     `;
 
     const projectsEl = document.getElementById('dash-projects');
+    const paginationEl = document.getElementById('dash-pagination');
     if (!data.projects.length) {
       projectsEl.innerHTML = `
         <div class="dash-empty">
@@ -502,6 +512,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
           <p>Start the tracer with a project path:</p>
           <p style="margin-top:8px"><code>copilot-tracer --project-path /path/to/repo</code></p>
         </div>`;
+      paginationEl.innerHTML = '';
       return;
     }
 
@@ -532,6 +543,18 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
           <div class="dash-project-last-active">Last active: ${lastActive}</div>
         </div>`;
     }).join('');
+
+    const { page, totalPages, totalProjects } = data.pagination;
+    paginationEl.innerHTML = totalPages > 1 ? `
+      <button type="button" onclick="changeDashboardPage(-1)" ${page === 1 ? 'disabled' : ''}>Previous</button>
+      <span>Page ${page} of ${totalPages} (${totalProjects} projects)</span>
+      <button type="button" onclick="changeDashboardPage(1)" ${page === totalPages ? 'disabled' : ''}>Next</button>
+    ` : `<span>${totalProjects} project${totalProjects === 1 ? '' : 's'}</span>`;
+  }
+
+  function changeDashboardPage(direction) {
+    dashboardPage += direction;
+    loadDashboard();
   }
 
   // ── Live Tracer (Socket.io) ────────────────────
