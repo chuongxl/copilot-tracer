@@ -212,3 +212,14 @@ a manually-configured plugin) even before `--setup` automation or accurate prici
 **Incremental delivery**: Phase 3 → Phase 4 (setup automation) → Phase 5 (pricing accuracy) →
 Phase 6 (polish/regression). Each phase's checkpoint is independently shippable and testable per
 its Independent Test above.
+
+---
+
+## Phase 7: Convergence
+
+- [X] T025 Resolve the OpenCode session's project by git remote URL when available (mirroring
+  `otlpReceiver.ts`'s `resolveProjectId()`: try `ensureProjectByRepo(repoUrl)` first, falling
+  back to `ensureProject(directory)` only when no remote can be determined) in
+  `src/openCodeHooks.ts`'s `resolveProject()`, so an OpenCode session in the same repository as
+  an existing Copilot CLI/VS Code session joins that same project instead of creating a
+  separate path-keyed one per FR-002 (partial).

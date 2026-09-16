@@ -13,8 +13,9 @@
  *   - Never throw. Any error is swallowed and logged; the session continues.
  *   - Do no blocking work. Everything here is in-memory plus one SQLite upsert.
  */
+import { execSync } from 'child_process';
 import { updateTurn, startToolCall, finishToolCall, finishActiveTurn, endSession, registerSession, } from './openCodeSession.js';
-import { ensureProject } from './db.js';
+import { ensureProject, ensureProjectByRepo } from './db.js';
 function str(value) {
     if (typeof value === 'string' && value.trim())
         return value;
@@ -36,14 +37,41 @@ function errorText(raw) {
     }
 }
 /**
+ * Best-effort `git remote get-url origin` for `directory`, run server-side (never inside the
+ * OpenCode plugin) so a slow/missing git binary can never affect the user's session. Returns
+ * undefined for anything that isn't a clean git repo with an `origin` remote — callers must
+ * treat that as "no repo signal" and fall back to path-based resolution, not an error.
+ */
+function detectRepoUrl(directory) {
+    try {
+        const url = execSync('git remote get-url origin', {
+            cwd: directory,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 2000,
+        }).trim();
+        return url || undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
  * OpenCode reports the working directory it's running in on every plugin event, which is
- * the best project signal available. Falls back to no project — traces still show up on
- * the live page, associated with a fallback/ungrouped project (FR-010).
+ * the best project signal available. Prefers the repo's remote URL — same precedence as
+ * `otlpReceiver.ts`'s `resolveProjectId()` — so an OpenCode session in the same repository as
+ * an existing Copilot CLI/VS Code session joins that project instead of a separate,
+ * path-keyed one. Falls back to path-based association, then to no project at all (FR-002,
+ * FR-010) — traces still show up on the live page, associated with a fallback/ungrouped
+ * project.
  */
 function resolveProject(directory) {
     if (!directory)
         return undefined;
     try {
+        const repoUrl = detectRepoUrl(directory);
+        if (repoUrl)
+            return ensureProjectByRepo(repoUrl);
         return ensureProject(directory);
     }
     catch {
