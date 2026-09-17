@@ -19,6 +19,7 @@ import { upsertTrace, createSession, deleteTrace, ensureProject, ensureProjectBy
 import { traceEvents } from './proxy.js';
 import { calcClaudeCredits } from './claudePricing.js';
 import { applyClaudeUsage, enrichClaudeContent, finishTurn, isHookTracked } from './claudeSession.js';
+import { calcCodexCredits } from './codexPricing.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAttr(attrs, key) {
     const kv = attrs?.find(a => a.key === key);
@@ -78,7 +79,7 @@ function resolveProjectId(repoUrl, workingDir, defaultProjectId) {
     return defaultProjectId;
 }
 function detectWorkingDir(attrs) {
-    for (const key of ['process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir']) {
+    for (const key of ['process.working_directory', 'github.copilot.working_dir', 'claude_code.working_dir', 'codex.cwd']) {
         const v = getAttr(attrs, key);
         if (v && String(v).trim())
             return String(v).trim();
@@ -680,8 +681,155 @@ function detectToolType(name) {
     // Skill — named capability loaded from skills context
     if (n.includes('skill') || n.includes('hermes') || n === 'copilot-tracer')
         return 'skill';
+    // Codex builtins (T004) — apply_patch is Codex's patch-application tool; shell/exec/local_shell
+    // are its sandboxed command-execution tools. None of these are MCP/agent/skill calls.
+    if (n === 'apply_patch' || n === 'shell' || n === 'exec' || n === 'local_shell')
+        return 'builtin';
     // Builtin — shell, file, search, etc
     return 'builtin';
+}
+// ── Codex CLI log-record processing (codex-otel exporter over OTLP logs) ─────
+//
+// Codex CLI (codex-rs/otel) emits its session/turn/tool business events as OTLP log records
+// rather than spans. Attribute key names below are best-effort, based on codex-otel's Rust
+// source rather than a stable published schema (research.md Decision 3) — confirm/adjust against
+// the installed Codex CLI version if events don't populate as expected.
+//
+// Recognized event.name values (contracts/otlp-logs-codex.md):
+//   codex.conversation_starts — ensure Session/Project
+//   codex.user_prompt         — open a running TraceEntry
+//   codex.tool_decision       — append a ToolCall
+//   codex.turn_cost           — attach token usage + cost, close the turn
+//   codex.sse_event           — backfill token usage if turn_cost was incomplete
+// In-flight Codex turns, keyed by the same codex:<id> namespaced id used for the TraceEntry.
+const codexInFlight = new Map();
+// codexEventId — derives a `codex:`-namespaced trace/entry id (T006), mirroring the existing
+// per-tool id-namespacing convention (data-model.md) so ids never collide across tools sharing a
+// session/project. Falls back through the identifiers Codex is most likely to attach to an event.
+function codexEventId(record, attrs, eventName) {
+    const turnId = getStringAttr(attrs, 'codex.turn_id')
+        ?? getStringAttr(attrs, 'codex.prompt_id')
+        ?? getStringAttr(attrs, 'codex.conversation_id')
+        ?? getStringAttr(attrs, 'trace.id');
+    if (turnId)
+        return `codex:${turnId}`;
+    // No stable identifier on this record — fall back to a fresh id (only conversation_starts
+    // legitimately has no turn yet; other events without an id can't be correlated further anyway).
+    return `codex:${eventName}:${record.timeUnixNano ?? randomUUID()}`;
+}
+// processCodexLogRecord (T007-T009, T011) — handles one Codex OTLP log record.
+function processCodexLogRecord(record, resourceAttrs, sessionId, projectId, workingDir) {
+    const attrs = record.attributes ?? [];
+    const eventName = getStringAttr(attrs, 'event.name') ?? getBodyText(record.body);
+    const name = eventName ?? '';
+    // T011 — ignore any event.name that isn't a recognized codex.* event (FR-010/SC-005).
+    if (!name.startsWith('codex.'))
+        return;
+    const timeMs = record.timeUnixNano ? nanoToMs(record.timeUnixNano) : Date.now();
+    const resolvedProjectId = resolveProjectId(getAttr(resourceAttrs, 'github.copilot.git.repository'), workingDir, projectId);
+    if (name === 'codex.conversation_starts') {
+        ensureSession(sessionId, resolvedProjectId);
+        return;
+    }
+    if (name === 'codex.user_prompt') {
+        ensureSession(sessionId, resolvedProjectId);
+        const id = codexEventId(record, attrs, name);
+        const promptText = getStringAttr(attrs, 'codex.prompt') ?? getBodyText(record.body) ?? '[Codex prompt]';
+        const entry = {
+            id,
+            sessionId,
+            dateTime: new Date(timeMs).toISOString(),
+            prompt: promptText,
+            tokens: { input: 0, output: 0, cached: 0, reasoning: 0, written: 0, total: 0 },
+            aiCredits: 0,
+            durationMs: 0,
+            toolCalls: [],
+            skillCount: 0, agentCount: 0, mcpCount: 0,
+            status: 'running',
+        };
+        codexInFlight.set(id, entry);
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+        return;
+    }
+    if (name === 'codex.tool_decision') {
+        const id = codexEventId(record, attrs, name);
+        const entry = codexInFlight.get(id);
+        if (!entry)
+            return; // no open turn to attach this tool call to
+        const toolName = getStringAttr(attrs, 'codex.tool_name') ?? getStringAttr(attrs, 'tool.name') ?? 'unknown';
+        const call = {
+            id: getStringAttr(attrs, 'codex.tool_call_id') ?? randomUUID(),
+            name: toolName,
+            type: detectToolType(toolName),
+            input: {},
+            startedAt: timeMs,
+            endedAt: timeMs,
+            durationMs: 0,
+        };
+        entry.toolCalls.push(call);
+        let skills = 0, agents = 0, mcps = 0;
+        for (const c of entry.toolCalls) {
+            if (c.type === 'skill')
+                skills++;
+            else if (c.type === 'agent')
+                agents++;
+            else if (c.type === 'mcp')
+                mcps++;
+        }
+        entry.skillCount = skills;
+        entry.agentCount = agents;
+        entry.mcpCount = mcps;
+        upsertTrace(entry);
+        traceEvents.emit('trace:update', entry);
+        return;
+    }
+    if (name === 'codex.turn_cost' || name === 'codex.sse_event') {
+        const id = codexEventId(record, attrs, name);
+        const entry = codexInFlight.get(id);
+        if (!entry)
+            return; // no open turn — usage backfill with nothing to backfill
+        const inputTokens = Number(getAttr(attrs, 'gen_ai.usage.input_tokens') ?? getAttr(attrs, 'codex.input_tokens') ?? 0);
+        const outputTokens = Number(getAttr(attrs, 'gen_ai.usage.output_tokens') ?? getAttr(attrs, 'codex.output_tokens') ?? 0);
+        const cachedTokens = Number(getAttr(attrs, 'gen_ai.usage.cache_read.input_tokens') ?? getAttr(attrs, 'codex.cached_tokens') ?? 0);
+        const model = getStringAttr(attrs, 'gen_ai.request.model') ?? getStringAttr(attrs, 'codex.model');
+        if (inputTokens + outputTokens > 0) {
+            entry.tokens = { input: inputTokens, output: outputTokens, cached: cachedTokens, reasoning: 0, written: outputTokens, total: inputTokens + outputTokens };
+            // T009 leaves aiCredits at 0 as a placeholder; T021 (US3) wires calcCodexCredits() in here.
+            entry.aiCredits = calcCodexCredits({ input: inputTokens, output: outputTokens }, model);
+        }
+        if (name === 'codex.turn_cost') {
+            entry.status = 'done';
+            entry.durationMs = timeMs - new Date(entry.dateTime).getTime();
+            upsertTrace(entry);
+            traceEvents.emit('trace:update', entry);
+            traceEvents.emit('trace:done', entry);
+            codexInFlight.delete(id);
+        }
+        else {
+            upsertTrace(entry);
+            traceEvents.emit('trace:update', entry);
+        }
+        return;
+    }
+}
+// processCodexLogs (T010) — mirrors processClaudeLogs' shape: iterate resourceLogs → scopeLogs →
+// logRecords, resolve sessionId/workingDir from resource attributes, dispatch each record.
+function processCodexLogs(payload, defaultSessionId, projectId) {
+    const resourceLogs = payload.resourceLogs ?? [];
+    for (const rl of resourceLogs) {
+        const resAttrs = rl.resource?.attributes ?? [];
+        const sessionFromOtel = getAttr(resAttrs, 'codex.session_id')
+            ?? getAttr(resAttrs, 'session.id')
+            ?? getAttr(resAttrs, 'codex.conversation_id');
+        const sessionId = String(sessionFromOtel ?? defaultSessionId);
+        const workingDir = detectWorkingDir(resAttrs);
+        for (const sl of rl.scopeLogs ?? []) {
+            for (const record of sl.logRecords ?? []) {
+                processCodexLogRecord(record, resAttrs, sessionId, projectId, workingDir);
+            }
+        }
+    }
 }
 // ── Register OTLP HTTP routes on the Express app ──────────────────────────────
 export function registerOtlpRoutes(app, defaultSessionId, projectId) {
@@ -709,9 +857,17 @@ export function registerOtlpRoutes(app, defaultSessionId, projectId) {
             res.status(400).json({ error: 'invalid payload' });
         }
     });
+    // Metrics remain accepted for Claude Code dashboards but are not trace entries.
+    app.post('/v1/metrics', (_req, res) => res.status(200).json({ partialSuccess: {} }));
+    // OTLP logs — shared route: Claude Code's hook-enriched OTLP logs and Codex CLI's
+    // codex-otel exporter (contracts/otlp-logs-codex.md) both post here. Each handler ignores
+    // event names it doesn't recognize (startsWith('claude_code.') / startsWith('codex.')), so
+    // dispatching to both per batch is safe and keeps the two tools independent.
     app.post('/v1/logs', (req, res) => {
         try {
-            processClaudeLogs(req.body, defaultSessionId, projectId);
+            const payload = req.body;
+            processClaudeLogs(payload, defaultSessionId, projectId);
+            processCodexLogs(payload, defaultSessionId, projectId);
             res.status(200).json({ partialSuccess: {} });
         }
         catch (e) {
@@ -719,7 +875,5 @@ export function registerOtlpRoutes(app, defaultSessionId, projectId) {
             res.status(400).json({ error: 'invalid payload' });
         }
     });
-    // Metrics remain accepted for Claude Code dashboards but are not trace entries.
-    app.post('/v1/metrics', (_req, res) => res.status(200).json({ partialSuccess: {} }));
     console.log('  📡 OTLP receiver ready on /v1/traces and /v1/logs');
 }
