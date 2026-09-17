@@ -33,8 +33,9 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - **Normal mode** — per-session with optional ACP proxy for live CLI tracing.
 - **Web UI** is a single vanilla JS file at `web/index.html` with Socket.io client. No build step for frontend.
 - **OTLP receiver** (`src/otlpReceiver.ts`) — parses OpenTelemetry spans from Copilot. Extracts `github.copilot.git.repository` for auto project detection.
+- **OpenCode hook receiver** (`src/openCodeHooks.ts` → `src/openCodeSession.ts`) — `POST /opencode/hook` receives lifecycle events (`session.created`, `message.updated`, `tool.execute.before/after`, `session.idle`, `session.error`) from the OpenCode plugin at `assets/opencode-plugin/copilot-tracer.js`. OpenCode has no OTLP export, so this hook is the single source of truth for a turn's lifecycle, content, and usage — unlike the OTLP path there's no separate enrichment step. Idempotency key: `(session_id, message_id)` for turns, `(message_id, tool_call_id)` for tool calls. Turns with no completion signal for 30 min are auto-closed as errored. The endpoint must always return `204` so it never blocks an OpenCode session.
 - **Claude Code hooks** (`src/claudeHooks.ts` → `src/claudeSession.ts`) — `POST /claude/hook` receives Claude's turn/tool lifecycle. Hooks own the lifecycle, OTLP enriches it with tokens/model/cost, joined on `prompt_id` = OTLP `prompt.id`. Falls back to OTLP-only when hooks aren't configured. The endpoint must always return `204` so it never blocks a Claude session.
-- **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables.
+- **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables (Copilot), and `src/openCodePricing.ts` (OpenCode's provider-agnostic model table; unknown models fall back to zero cost).
 - **Data model**: `Project → Session → Trace` hierarchy. Projects auto-created from repo URL.
 
 ## Key CLI Flags
@@ -42,7 +43,7 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 | Flag | Description |
 |------|-------------|
 | `--daemon` | Run as background daemon (always-on OTLP receiver) |
-| `--setup` | Auto-detect copilot CLI + VS Code, patch env vars |
+| `--setup` | Auto-detect copilot CLI + VS Code + OpenCode, patch env vars / install OpenCode plugin |
 | `--setup --daemon` | First-time setup + start daemon in one command |
 | `--project-path <path>` | Project source path (normal mode) |
 | `--port <port>` | Web UI port (default: 4747) |
@@ -60,3 +61,5 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - The `prepare` script runs `tsc` on every `npm install` — if build fails, install fails
 - `github.copilot.git.repository` is a span attribute on `invoke_agent` spans, used for auto project detection
 - The `.gitignore` has a formatting issue (backslashes instead of newlines), but git still works correctly
+- OpenCode's plugin event field names come from `@opencode-ai/plugin` (session/message/tool payload shapes), not from any spec doc — verify against that package's types if events stop mapping cleanly
+- `COPILOT_TRACER_OPENCODE_URL` overrides the OpenCode plugin's target URL (defaults to `http://localhost:<port>/opencode/hook`), for pointing a globally-installed plugin at a non-default port

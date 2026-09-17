@@ -15,6 +15,9 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const OTEL_ENDPOINT_KEY   = 'OTEL_EXPORTER_OTLP_ENDPOINT';
 const OTEL_CONTENT_KEY    = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT';
@@ -305,6 +308,16 @@ function detectCopilotCli(): { found: boolean; path?: string; version?: string }
   }
 }
 
+function detectOpenCodeCli(): { found: boolean; path?: string; version?: string } {
+  try {
+    const p = execSync('which opencode', { encoding: 'utf8' }).trim();
+    const v = execSync('opencode --version 2>/dev/null || true', { encoding: 'utf8' }).trim();
+    return { found: true, path: p, version: v.split('\n')[0] };
+  } catch {
+    return { found: false };
+  }
+}
+
 function detectVSCode(): { found: boolean; path?: string; version?: string; hasBuiltinCopilot: boolean } {
   try {
     const v = execSync('code --version 2>/dev/null', { encoding: 'utf8' }).trim();
@@ -374,6 +387,49 @@ function getVSCodeSettingsPath(): string {
   }
   // Linux (and WSL)
   return path.join(os.homedir(), '.config/Code/User/settings.json');
+}
+
+function getOpenCodePluginsDir(): string {
+  return path.join(os.homedir(), '.config', 'opencode', 'plugins');
+}
+
+/**
+ * Installs the tracer's OpenCode plugin (`assets/opencode-plugin/copilot-tracer.js`) into
+ * OpenCode's global plugin directory. Unlike VS Code/shell setup, OpenCode's plugin
+ * directory holds independent files, so this is a single additive file write — no
+ * merge-with-existing-config logic is needed, and no other tool's plugin is touched.
+ *
+ * Failures (missing template, unwritable directory/permissions — CHK003) are caught and
+ * reported, never thrown, so a plugin install problem can't abort the rest of `--setup`.
+ */
+function installOpenCodePlugin(port: number): { action: 'added' | 'updated' | 'already_set' | 'skipped'; reason?: string } {
+  const templatePath = path.join(__dirname, '../assets/opencode-plugin/copilot-tracer.js');
+  let template: string;
+  try {
+    template = fs.readFileSync(templatePath, 'utf8');
+  } catch {
+    return { action: 'skipped', reason: 'plugin template not found (reinstall copilot-tracer)' };
+  }
+
+  const rendered = template.replace(/__PORT__/g, String(port));
+  const pluginsDir = getOpenCodePluginsDir();
+  const pluginPath = path.join(pluginsDir, 'copilot-tracer.js');
+
+  try {
+    fs.mkdirSync(pluginsDir, { recursive: true });
+  } catch (err) {
+    return { action: 'skipped', reason: `could not create ${pluginsDir}: ${(err as Error).message}` };
+  }
+
+  const existing = fs.existsSync(pluginPath) ? fs.readFileSync(pluginPath, 'utf8') : undefined;
+  if (existing === rendered) return { action: 'already_set' };
+
+  try {
+    fs.writeFileSync(pluginPath, rendered, 'utf8');
+  } catch (err) {
+    return { action: 'skipped', reason: `could not write ${pluginPath}: ${(err as Error).message}` };
+  }
+  return { action: existing === undefined ? 'added' : 'updated' };
 }
 
 // ── Patchers ──────────────────────────────────────────────────────────────────
@@ -514,7 +570,29 @@ export function runSetup(port: number, silent = false): void {
     }
   }
 
-  // 5. Patch Claude Code hooks (turn/tool lifecycle — OTLP can't correlate multi-prompt sessions)
+  // 5. Detect OpenCode + install its plugin
+  const opencode = detectOpenCodeCli();
+  if (opencode.found) {
+    console.log(`\n${CHECK} OpenCode CLI detected`);
+    if (opencode.version) console.log(`   ${INFO} Version: ${opencode.version}`);
+    const result = installOpenCodePlugin(port);
+    if (result.action === 'added') {
+      console.log(`   ${CHECK} Plugin installed: ~/.config/opencode/plugins/copilot-tracer.js`);
+      console.log(`   ${ARROW} Restart OpenCode (or start a new session) to pick it up`);
+    } else if (result.action === 'updated') {
+      console.log(`   ${CHECK} Plugin updated to port ${port}`);
+      console.log(`   ${ARROW} Restart OpenCode (or start a new session) to pick it up`);
+    } else if (result.action === 'already_set') {
+      console.log(`   ${CHECK} Plugin already up to date`);
+    } else {
+      console.log(`   ${WARN} Plugin not installed: ${result.reason}`);
+    }
+  } else {
+    console.log(`\n${WARN} OpenCode CLI not found — skipping OpenCode plugin install`);
+    console.log(`   Install: https://opencode.ai/docs — rerun --setup afterward`);
+  }
+
+  // 6. Patch Claude Code hooks (turn/tool lifecycle — OTLP can't correlate multi-prompt sessions)
   const claudeSettingsPath = getClaudeSettingsPath();
   const claudeResult = patchClaudeSettings(claudeSettingsPath, port);
   if (claudeResult.action === 'added') {
@@ -532,7 +610,7 @@ export function runSetup(port: number, silent = false): void {
     console.log(`\n${WARN} Claude Code hooks: ${claudeResult.reason}`);
   }
 
-  // 6. Apply env vars to the current process so the OTLP receiver works immediately
+  // 7. Apply env vars to the current process so the OTLP receiver works immediately
   process.env[OTEL_ENDPOINT_KEY]  = `http://localhost:${port}`;
   process.env[OTEL_CONTENT_KEY]   = 'true';
   process.env[OTEL_ENABLED_KEY]   = 'true';
@@ -544,7 +622,7 @@ export function runSetup(port: number, silent = false): void {
   process.env[OTEL_LOG_PROMPTS_KEY] = '1';
   process.env[OTEL_LOG_RESPONSES_KEY] = '1';
 
-  // 7. Summary
+  // 8. Summary
   if (!silent) {
     console.log('\n────────────────────────────────────────────────');
     console.log('  One manual step required:\n');

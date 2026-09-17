@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary } from './db.js';
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
+import { registerOpenCodeHookRoutes } from './openCodeHooks.js';
 import { registerClaudeHookRoutes } from './claudeHooks.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function startWebServer(port = 4747, sessionId, projectId) {
@@ -18,6 +19,8 @@ export function startWebServer(port = 4747, sessionId, projectId) {
     // Register OTLP receiver routes
     app.use(express.json({ limit: '10mb' }));
     registerOtlpRoutes(app, sessionId ?? 'default', projectId);
+    // Register OpenCode plugin hook receiver routes (additive; no impact on OTLP/ACP paths)
+    registerOpenCodeHookRoutes(app);
     // Register Claude Code hook receiver (turn/tool lifecycle; OTLP supplies token usage)
     registerClaudeHookRoutes(app);
     // API
