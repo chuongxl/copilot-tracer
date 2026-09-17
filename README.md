@@ -28,9 +28,6 @@ copilot-tracer --setup --daemon
 ```
 
 This will:
-1. Detect your Copilot CLI, VS Code, and OpenCode installation
-2. Patch `~/.zshrc` with OTEL env vars
-3. Patch VS Code `settings.json` with terminal env vars
 1. Detect your Copilot CLI, VS Code, Claude Code, and OpenCode installation
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
@@ -58,16 +55,20 @@ Open **http://localhost:4747** to see the dashboard.
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  copilot-tracer --daemon (runs once, stays running)      │
-│                                                          │
-│  OTLP Receiver ← Copilot CLI + Claude Code + VS Code                   │
-│  (auto-detects project from github.copilot.git.repository)│
-│  OpenCode hook receiver ← OpenCode plugin                │
-│  (POST /opencode/hook — session/message/tool lifecycle)  │
-│                                                          │
-│  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  copilot-tracer --daemon (runs once, stays running)        │
+│                                                             │
+│  OTLP Receiver ← Copilot CLI + Claude Code + VS Code        │
+│  (auto-detects project from github.copilot.git.repository) │
+│                                                             │
+│  Claude hook receiver ← Claude Code hooks (turn lifecycle)  │
+│  (POST /claude/hook — enriched by the OTLP stream above)    │
+│                                                             │
+│  OpenCode hook receiver ← OpenCode plugin                   │
+│  (POST /opencode/hook — session/message/tool lifecycle)     │
+│                                                             │
+│  SQLite DB → Dashboard + Live Tracer (Socket.io)            │
+└───────────────────────────────────────────────────────────┘
 
 Copilot CLI / Claude Code / VS Code Copilot Chat
          │
@@ -243,6 +244,37 @@ your session continues normally.
 
 If hooks are unavailable (older Claude Code, `disableAllHooks`, remote sessions), the
 tracer falls back to its original OTLP-only handling.
+
+### OpenCode plugin (required for OpenCode session capture)
+
+[OpenCode](https://opencode.ai) has no OTLP exporter, so — unlike Copilot CLI, Claude
+Code, and VS Code — it can't be wired up with env vars alone. Instead, copilot-tracer
+ships a small [OpenCode plugin](https://opencode.ai/docs/plugins/) that hooks into
+OpenCode's own event bus and forwards each session/message/tool lifecycle event to the
+daemon over HTTP:
+
+- **Plugin** (`assets/opencode-plugin/copilot-tracer.js`) — subscribes to OpenCode's
+  `session.created`, `message.updated`, `tool.execute.before`/`tool.execute.after`,
+  `session.idle`, and `session.error` events, and `POST`s each one to
+  `http://localhost:4747/opencode/hook`.
+- **Receiver** (`src/openCodeHooks.ts` → `src/openCodeSession.ts`) — since OpenCode has
+  no separate telemetry stream to enrich from, the hook payload is the single source of
+  truth for a turn's prompt, response, tool calls, token usage, and cost. Turns are
+  matched by `(session_id, message_id)`; tool calls by `(message_id, tool_call_id)`.
+  Turns left open for 30 minutes with no completion signal are auto-closed as errored.
+- Project grouping prefers the session's git remote URL (same precedence as the OTLP
+  receiver), falling back to the working directory path, so an OpenCode session in the
+  same repo as a Copilot CLI or Claude Code session joins the same project.
+
+`copilot-tracer --setup` detects the OpenCode CLI and installs the plugin for you at
+`~/.config/opencode/plugins/copilot-tracer.js` (existing installs are updated in place if
+the daemon port changes; the step is skipped harmlessly if OpenCode isn't found or the
+plugin directory isn't writable). To install it by hand, copy
+`assets/opencode-plugin/copilot-tracer.js` to `~/.config/opencode/plugins/copilot-tracer.js`
+and start a new OpenCode session — no other configuration is required.
+
+Like the other receivers, `POST /opencode/hook` always answers `204 No Content`, so a
+daemon that's slow, unreachable, or down can never block or fail an OpenCode session.
 
 For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 
