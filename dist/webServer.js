@@ -8,6 +8,7 @@ import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLoca
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
 import { registerOpenCodeHookRoutes } from './openCodeHooks.js';
+import { registerClaudeHookRoutes } from './claudeHooks.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function startWebServer(port = 4747, sessionId, projectId) {
     const app = express();
@@ -20,6 +21,8 @@ export function startWebServer(port = 4747, sessionId, projectId) {
     registerOtlpRoutes(app, sessionId ?? 'default', projectId);
     // Register OpenCode plugin hook receiver routes (additive; no impact on OTLP/ACP paths)
     registerOpenCodeHookRoutes(app);
+    // Register Claude Code hook receiver (turn/tool lifecycle; OTLP supplies token usage)
+    registerClaudeHookRoutes(app);
     // API
     app.get('/api/traces', (req, res) => {
         const sid = req.query.sessionId || undefined; // undefined = all sessions
@@ -84,8 +87,16 @@ ${prompt.trim()}`;
             return res.json(null);
         res.json(getSessionSummary(sid));
     });
-    app.get('/api/dashboard', (_req, res) => {
-        res.json(getDashboard());
+    app.get('/api/dashboard', (req, res) => {
+        const pageParam = req.query.page;
+        const pageSizeParam = req.query.pageSize;
+        const page = pageParam === undefined ? 1 : Number(pageParam);
+        const pageSize = pageSizeParam === undefined ? 12 : Number(pageSizeParam);
+        if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+            res.status(400).json({ error: 'page must be a positive integer and pageSize must be an integer between 1 and 100' });
+            return;
+        }
+        res.json(getDashboard(page, pageSize));
     });
     // Project registration — CLI registers its local path for a project
     app.post('/api/projects', (req, res) => {

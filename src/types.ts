@@ -72,4 +72,10 @@ export interface DashboardProject {
 export interface DashboardData {
   projects: DashboardProject[];
   totals: { projects: number; sessions: number; tokens: number; credits: number };
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    totalProjects: number;
+  };
 }

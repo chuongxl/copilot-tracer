@@ -1,6 +1,6 @@
 # copilot-tracer
 
-Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, the **VS Code Copilot extension**, and **OpenCode**.
+Real-time tracing and prompt-refinement companion for **GitHub Copilot CLI**, **Claude Code**, the **VS Code Copilot extension**, and **OpenCode**.
 
 Captures every prompt, response, token usage, AI credits, tool calls, and duration — all in one place. Runs as a background daemon that collects data from all your projects automatically. Includes a web dashboard with project overview and per-project live tracing.
 
@@ -11,7 +11,7 @@ Captures every prompt, response, token usage, AI credits, tool calls, and durati
 - **Daemon mode** — install once, run forever. Collects traces from all projects automatically
 - **Auto project detection** — detects project from `github.copilot.git.repository` in OTLP spans
 - **Zero-intrusion capture** — uses Copilot's built-in OTel support. Set env vars, done.
-- **Works everywhere** — captures Copilot CLI, VS Code Copilot Chat, and OpenCode sessions
+- **Works everywhere** — captures GitHub Copilot CLI, Claude Code, VS Code Copilot Chat, and OpenCode sessions
 - **Dashboard** — overview of all projects with token usage, credits, and session counts
 - **Live tracer** — real-time trace table per project with detail panel
 - **Prompt refinement** — rewrites prompts with stronger instructions and less noise
@@ -31,8 +31,14 @@ This will:
 1. Detect your Copilot CLI, VS Code, and OpenCode installation
 2. Patch `~/.zshrc` with OTEL env vars
 3. Patch VS Code `settings.json` with terminal env vars
-4. Install the OpenCode plugin (if OpenCode is found) at `~/.config/opencode/plugins/copilot-tracer.js`
-5. Start the daemon on port 4747
+1. Detect your Copilot CLI, VS Code, Claude Code, and OpenCode installation
+2. Patch `~/.zshrc` with OTEL env vars
+3. Patch VS Code `settings.json` with terminal env vars
+4. Enable Claude Code OTLP logs/events and enhanced beta traces
+5. Install Claude Code hooks into `~/.claude/settings.json` (merged with any hooks you
+   already have — nothing is overwritten)
+6. Install the OpenCode plugin (if OpenCode is found) at `~/.config/opencode/plugins/copilot-tracer.js`
+7. Start the daemon on port 4747
 
 Then apply env vars in your current shell:
 
@@ -40,7 +46,10 @@ Then apply env vars in your current shell:
 source ~/.zshrc
 ```
 
-Restart VS Code (and any running OpenCode sessions) once. After that, the daemon collects traces from all your Copilot and OpenCode sessions automatically.
+Restart VS Code once, restart Claude Code to pick up the hooks, and restart any running
+OpenCode sessions. After that, the daemon collects traces from all your Copilot, Claude
+Code, and OpenCode sessions automatically. Claude Code content flags are enabled by setup
+so prompts and responses can be displayed in the local dashboard.
 
 Open **http://localhost:4747** to see the dashboard.
 
@@ -52,7 +61,7 @@ Open **http://localhost:4747** to see the dashboard.
 ┌─────────────────────────────────────────────────────────┐
 │  copilot-tracer --daemon (runs once, stays running)      │
 │                                                          │
-│  OTLP Receiver ← Copilot CLI + VS Code                   │
+│  OTLP Receiver ← Copilot CLI + Claude Code + VS Code                   │
 │  (auto-detects project from github.copilot.git.repository)│
 │  OpenCode hook receiver ← OpenCode plugin                │
 │  (POST /opencode/hook — session/message/tool lifecycle)  │
@@ -60,14 +69,14 @@ Open **http://localhost:4747** to see the dashboard.
 │  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
 └─────────────────────────────────────────────────────────┘
 
-Copilot CLI / VS Code Copilot Chat
+Copilot CLI / Claude Code / VS Code Copilot Chat
          │
          │  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
          ↓
-   POST /v1/traces (OpenTelemetry OTLP JSON)
+   POST /v1/traces and /v1/logs (OpenTelemetry OTLP JSON)
          │
          ↓
-   copilot-tracer parses spans → tokens, credits, tool calls
+   copilot-tracer parses spans and events → tokens, credits, tool calls
          │
          ↓
    SQLite DB (~/.copilot-tracer/traces.db)
@@ -124,6 +133,7 @@ Open http://localhost:4747 after starting the daemon.
 - **Summary cards** — total projects, sessions, tokens, credits
 - **Project cards** — each project shows path, session count, tokens, credits, last active
 - **Click a project** → opens live tracer filtered to that project
+<img width="737" height="410" alt="image" src="https://github.com/user-attachments/assets/dc20653b-8774-46b3-9a42-6e7bb934aded" />
 
 ---
 
@@ -140,6 +150,10 @@ Real-time trace table for a specific project.
 - Click Reasoning → full reasoning text
 - Click Skills / Agents / MCPs → filtered call list
 - Real-time updates via Socket.io
+
+<img width="1504" height="742" alt="image" src="https://github.com/user-attachments/assets/f334108f-c587-4228-8120-7dac2f85f90b" />
+
+<img width="1061" height="696" alt="image" src="https://github.com/user-attachments/assets/1555d5a2-dbca-4f1d-b102-3d2865dcee68" />
 
 ---
 
@@ -176,7 +190,59 @@ Add to `~/.zshrc`:
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
 export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 export COPILOT_OTEL_ENABLED=true
+
+# Claude Code telemetry
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_LOG_USER_PROMPTS=1
+export OTEL_LOG_ASSISTANT_RESPONSES=1
 ```
+
+Claude Code exports standard OTLP logs/events and optional beta traces. See
+[Anthropic's monitoring documentation](https://code.claude.com/docs/en/monitoring-usage)
+for protocol and content controls.
+
+### Claude Code hooks (required for full session capture)
+
+Telemetry alone can't reconstruct a multi-prompt Claude session: its log events are
+correlated by `prompt.id` while its spans are correlated by OTLP `traceId`, and neither
+key is always present. The result is turns with no token usage that never leave the
+`running` state.
+
+So the tracer also registers [hooks](https://code.claude.com/docs/en/hooks), which give
+it an ordered, complete lifecycle — every prompt, every tool call, every turn boundary.
+The two halves join on `prompt_id`, which Claude documents as matching the OTLP
+`prompt.id` attribute:
+
+- **Hooks** own the turn and tool lifecycle.
+- **OTLP** enriches those turns with tokens, model and cost.
+
+`copilot-tracer --setup` writes this for you. To add it by hand, merge the following into
+`~/.claude/settings.json` (keep any hooks you already have — Claude runs all of them):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "http", "url": "http://localhost:4747/claude/hook", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+Setup subscribes to `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PostToolUseFailure`, `Stop`, `StopFailure` and `SessionEnd` using the same handler.
+
+The receiver always answers `204 No Content`, which the hooks spec defines as "no
+decision", so it can never block a tool call, deny a permission, or stop a turn. If the
+daemon isn't running, Claude treats the connection failure as a non-blocking error and
+your session continues normally.
+
+If hooks are unavailable (older Claude Code, `disableAllHooks`, remote sessions), the
+tracer falls back to its original OTLP-only handling.
 
 For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 

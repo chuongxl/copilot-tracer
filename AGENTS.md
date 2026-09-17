@@ -16,6 +16,7 @@
 ## No test suite
 
 There is no test framework or test script. Manual testing only:
+- `node test-claude-hooks.mjs` runs end-to-end Claude hook + OTLP checks against a throwaway DB
 - `node test-seed.mjs` seeds 4 sample traces to SQLite
 - Then `npm run dev -- --daemon --port 4747`
 - Verify via `curl http://localhost:4747/api/dashboard`
@@ -33,6 +34,7 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - **Web UI** is a single vanilla JS file at `web/index.html` with Socket.io client. No build step for frontend.
 - **OTLP receiver** (`src/otlpReceiver.ts`) — parses OpenTelemetry spans from Copilot. Extracts `github.copilot.git.repository` for auto project detection.
 - **OpenCode hook receiver** (`src/openCodeHooks.ts` → `src/openCodeSession.ts`) — `POST /opencode/hook` receives lifecycle events (`session.created`, `message.updated`, `tool.execute.before/after`, `session.idle`, `session.error`) from the OpenCode plugin at `assets/opencode-plugin/copilot-tracer.js`. OpenCode has no OTLP export, so this hook is the single source of truth for a turn's lifecycle, content, and usage — unlike the OTLP path there's no separate enrichment step. Idempotency key: `(session_id, message_id)` for turns, `(message_id, tool_call_id)` for tool calls. Turns with no completion signal for 30 min are auto-closed as errored. The endpoint must always return `204` so it never blocks an OpenCode session.
+- **Claude Code hooks** (`src/claudeHooks.ts` → `src/claudeSession.ts`) — `POST /claude/hook` receives Claude's turn/tool lifecycle. Hooks own the lifecycle, OTLP enriches it with tokens/model/cost, joined on `prompt_id` = OTLP `prompt.id`. Falls back to OTLP-only when hooks aren't configured. The endpoint must always return `204` so it never blocks a Claude session.
 - **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables (Copilot), and `src/openCodePricing.ts` (OpenCode's provider-agnostic model table; unknown models fall back to zero cost).
 - **Data model**: `Project → Session → Trace` hierarchy. Projects auto-created from repo URL.
 

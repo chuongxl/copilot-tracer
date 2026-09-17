@@ -1,12 +1,13 @@
 /**
- * copilot-tracer setup — auto-detect copilot CLI + VS Code and inject OTLP env config
+ * copilot-tracer setup — auto-detect Copilot/VS Code and inject OTLP env config
  *
  * What it does:
  *  1. Detect copilot CLI (which copilot)
  *  2. Detect VS Code installation + built-in copilot (v1.99+)
  *  3. Inject OTEL env vars into:
- *     - Shell profile (~/.zshrc / ~/.bashrc / ~/.zprofile)
- *     - VS Code settings.json (terminal.integrated.env.osx)
+ *     - Shell profile: ~/.zshrc / ~/.bashrc / ~/.zprofile (macOS/Linux),
+ *       $PROFILE — Documents\PowerShell\Microsoft.PowerShell_profile.ps1 (Windows)
+ *     - VS Code settings.json (terminal.integrated.env.osx / .linux / .windows)
  *  4. Print a summary and next steps
  */
 
@@ -21,13 +22,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OTEL_ENDPOINT_KEY   = 'OTEL_EXPORTER_OTLP_ENDPOINT';
 const OTEL_CONTENT_KEY    = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT';
 const OTEL_ENABLED_KEY    = 'COPILOT_OTEL_ENABLED';
+const CLAUDE_TELEMETRY_KEY = 'CLAUDE_CODE_ENABLE_TELEMETRY';
+const CLAUDE_TRACES_KEY = 'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA';
+const OTEL_LOGS_EXPORTER_KEY = 'OTEL_LOGS_EXPORTER';
+const OTEL_TRACES_EXPORTER_KEY = 'OTEL_TRACES_EXPORTER';
+const OTEL_PROTOCOL_KEY = 'OTEL_EXPORTER_OTLP_PROTOCOL';
+const OTEL_LOG_PROMPTS_KEY = 'OTEL_LOG_USER_PROMPTS';
+const OTEL_LOG_RESPONSES_KEY = 'OTEL_LOG_ASSISTANT_RESPONSES';
 
-function otelEnvBlock(port: number): string {
+function isWindows(): boolean {
+  return process.platform === 'win32';
+}
+
+function otelEnvBlockPosix(port: number): string {
   return [
     `# >>> copilot-tracer OTLP config (auto-added) >>>`,
     `export ${OTEL_ENDPOINT_KEY}=http://localhost:${port}`,
     `export ${OTEL_CONTENT_KEY}=true`,
     `export ${OTEL_ENABLED_KEY}=true`,
+    `export ${CLAUDE_TELEMETRY_KEY}=1`,
+    `export ${CLAUDE_TRACES_KEY}=1`,
+    `export ${OTEL_LOGS_EXPORTER_KEY}=otlp`,
+    `export ${OTEL_TRACES_EXPORTER_KEY}=otlp`,
+    `export ${OTEL_PROTOCOL_KEY}=http/json`,
+    `export ${OTEL_LOG_PROMPTS_KEY}=1`,
+    `export ${OTEL_LOG_RESPONSES_KEY}=1`,
     ``,
     `# Tag every copilot prompt with the terminal folder it ran from, so the`,
     `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
@@ -48,8 +67,73 @@ function otelEnvBlock(port: number): string {
     `  export OTEL_RESOURCE_ATTRIBUTES`,
     `  command copilot "\$@"`,
     `}`,
+    ``,
+    `claude() {`,
+    `  local _wd`,
+    `  if command -v python3 >/dev/null 2>&1; then`,
+    `    _wd="$(pwd | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe="/"))')"`,
+    `  else`,
+    `    _wd="$(pwd)"`,
+    `  fi`,
+    `  if [ -n "\${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then`,
+    `    OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES},claude_code.working_dir=\${_wd}"`,
+    `  else`,
+    `    OTEL_RESOURCE_ATTRIBUTES="claude_code.working_dir=\${_wd}"`,
+    `  fi`,
+    `  export OTEL_RESOURCE_ATTRIBUTES`,
+    `  command claude "\$@"`,
+    `}`,
     `# <<< copilot-tracer <<<`,
   ].join('\n');
+}
+
+function otelEnvBlockPowerShell(port: number): string {
+  return [
+    `# >>> copilot-tracer OTLP config (auto-added) >>>`,
+    `$env:${OTEL_ENDPOINT_KEY} = "http://localhost:${port}"`,
+    `$env:${OTEL_CONTENT_KEY} = "true"`,
+    `$env:${OTEL_ENABLED_KEY} = "true"`,
+    `$env:${CLAUDE_TELEMETRY_KEY} = "1"`,
+    `$env:${CLAUDE_TRACES_KEY} = "1"`,
+    `$env:${OTEL_LOGS_EXPORTER_KEY} = "otlp"`,
+    `$env:${OTEL_TRACES_EXPORTER_KEY} = "otlp"`,
+    `$env:${OTEL_PROTOCOL_KEY} = "http/json"`,
+    `$env:${OTEL_LOG_PROMPTS_KEY} = "1"`,
+    `$env:${OTEL_LOG_RESPONSES_KEY} = "1"`,
+    ``,
+    `# Tag every copilot prompt with the terminal folder it ran from, so the`,
+    `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
+    `# so we inject it via OTEL_RESOURCE_ATTRIBUTES (percent-encoded).`,
+    `function copilot {`,
+    `    $_wd = (Get-Location).Path.Replace('\\','/')`,
+    `    $_wd = [uri]::EscapeDataString($_wd).Replace('%2F','/')`,
+    `    if ($env:OTEL_RESOURCE_ATTRIBUTES) {`,
+    `        $parts = $env:OTEL_RESOURCE_ATTRIBUTES -split ',' | Where-Object { $_ -notmatch '^github\\.copilot\\.working_dir=' }`,
+    `        $env:OTEL_RESOURCE_ATTRIBUTES = $parts -join ','`,
+    `        if ($env:OTEL_RESOURCE_ATTRIBUTES) { $env:OTEL_RESOURCE_ATTRIBUTES += ',' }`,
+    `    }`,
+    `    $env:OTEL_RESOURCE_ATTRIBUTES = "$($env:OTEL_RESOURCE_ATTRIBUTES)github.copilot.working_dir=$_wd"`,
+    `    $cmd = Get-Command copilot -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1`,
+    `    if ($cmd) { & $cmd.Source @args } else { & copilot.cmd @args }`,
+    `}`,
+    ``,
+    `function claude {`,
+    `    $_wd = (Get-Location).Path.Replace('\\','/')`,
+    `    $_wd = [uri]::EscapeDataString($_wd).Replace('%2F','/')`,
+    `    if ($env:OTEL_RESOURCE_ATTRIBUTES) {`,
+    `        $env:OTEL_RESOURCE_ATTRIBUTES += ",claude_code.working_dir=$_wd"`,
+    `    } else {`,
+    `        $env:OTEL_RESOURCE_ATTRIBUTES = "claude_code.working_dir=$_wd"`,
+    `    }`,
+    `    $cmd = Get-Command claude -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1`,
+    `    if ($cmd) { & $cmd.Source @args } else { & claude.cmd @args }`,
+    `}`,
+    `# <<< copilot-tracer <<<`,
+  ].join('\n');
+}
+
+function otelEnvBlock(port: number): string {
+  return isWindows() ? otelEnvBlockPowerShell(port) : otelEnvBlockPosix(port);
 }
 
 function vscodeEnvBlock(port: number): Record<string, string> {
@@ -57,16 +141,168 @@ function vscodeEnvBlock(port: number): Record<string, string> {
     [OTEL_ENDPOINT_KEY]: `http://localhost:${port}`,
     [OTEL_CONTENT_KEY]: 'true',
     [OTEL_ENABLED_KEY]: 'true',
+    [CLAUDE_TELEMETRY_KEY]: '1',
+    [CLAUDE_TRACES_KEY]: '1',
+    [OTEL_LOGS_EXPORTER_KEY]: 'otlp',
+    [OTEL_TRACES_EXPORTER_KEY]: 'otlp',
+    [OTEL_PROTOCOL_KEY]: 'http/json',
+    [OTEL_LOG_PROMPTS_KEY]: '1',
+    [OTEL_LOG_RESPONSES_KEY]: '1',
   };
 }
+
+// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// OTLP alone can't correlate a multi-prompt Claude session (its logs key on prompt.id,
+// its spans key on OTLP traceId, and neither is always present). Hooks give us the
+// ordered turn/tool lifecycle; OTLP still supplies the token/model/cost numbers.
+
+/** Events the tracer subscribes to, and which of them support a matcher. */
+const CLAUDE_HOOK_EVENTS = [
+  { event: 'SessionStart', matcher: undefined },
+  { event: 'UserPromptSubmit', matcher: undefined },
+  { event: 'PreToolUse', matcher: '.*' },
+  { event: 'PostToolUse', matcher: '.*' },
+  { event: 'PostToolUseFailure', matcher: '.*' },
+  { event: 'Stop', matcher: undefined },
+  { event: 'StopFailure', matcher: undefined },
+  { event: 'SessionEnd', matcher: undefined },
+] as const;
+
+interface ClaudeHookHandler {
+  type?: string;
+  url?: string;
+  timeout?: number;
+  [key: string]: unknown;
+}
+
+interface ClaudeHookMatcherGroup {
+  matcher?: string;
+  hooks?: ClaudeHookHandler[];
+  [key: string]: unknown;
+}
+
+export function claudeHookUrl(port: number): string {
+  return `http://localhost:${port}/claude/hook`;
+}
+
+function getClaudeSettingsPath(): string {
+  return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
+/** Our handler is identified by its URL path so we can update the port in place. */
+function isTracerHandler(handler: ClaudeHookHandler): boolean {
+  return handler?.type === 'http' && typeof handler.url === 'string' && handler.url.includes('/claude/hook');
+}
+
+function tracerHandler(port: number): ClaudeHookHandler {
+  return {
+    type: 'http',
+    url: claudeHookUrl(port),
+    // Short timeout: a hook that stalls must never hold up the user's session. A
+    // timed-out http hook is cancelled and renders no decision, which is what we want.
+    timeout: 5,
+  };
+}
+
+/**
+ * Merge the tracer's hooks into Claude's settings.
+ *
+ * Merging (never replacing) is mandatory — users and plugins routinely register their
+ * own handlers on these same events, and clobbering them would silently break unrelated
+ * tooling. We only ever add, update, or leave alone our own `/claude/hook` handler.
+ */
+export function patchClaudeSettings(settingsPath: string, port: number): { action: 'added' | 'already_set' | 'updated' | 'skipped'; reason?: string } {
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    const raw = fs.readFileSync(settingsPath, 'utf8').trim();
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return { action: 'skipped', reason: '~/.claude/settings.json is not a JSON object' };
+        }
+        settings = parsed as Record<string, unknown>;
+      } catch {
+        // Never overwrite a file we can't understand — the user would lose their config.
+        return { action: 'skipped', reason: 'could not parse ~/.claude/settings.json' };
+      }
+    }
+  }
+
+  // Everything below treats the user's file as untrusted: it is hand-edited, shared
+  // between tools, and losing part of it would silently break their setup. Anything we
+  // don't recognise is left exactly as found.
+  const rawHooks = settings.hooks;
+  if (rawHooks !== undefined && (typeof rawHooks !== 'object' || rawHooks === null || Array.isArray(rawHooks))) {
+    return { action: 'skipped', reason: '"hooks" in ~/.claude/settings.json is not an object' };
+  }
+
+  const hooks = (rawHooks ?? {}) as Record<string, unknown>;
+  let added = false;
+  let updated = false;
+
+  for (const { event, matcher } of CLAUDE_HOOK_EVENTS) {
+    const rawGroups = hooks[event];
+    // An unrecognised shape for this event is left untouched rather than replaced —
+    // overwriting it would discard whatever the user or a plugin configured there.
+    if (rawGroups !== undefined && !Array.isArray(rawGroups)) continue;
+
+    const groups = (rawGroups ?? []) as ClaudeHookMatcherGroup[];
+    const desired = tracerHandler(port);
+
+    // Only well-formed groups are candidates for merging into.
+    const usable = groups.filter((g): g is ClaudeHookMatcherGroup =>
+      !!g && typeof g === 'object' && !Array.isArray(g));
+
+    // Find our handler wherever it already lives in this event's groups.
+    const ownerGroup = usable.find(g => Array.isArray(g.hooks) && g.hooks.some(h => !!h && isTracerHandler(h)));
+    if (ownerGroup) {
+      const handlers = ownerGroup.hooks as ClaudeHookHandler[];
+      const index = handlers.findIndex(h => !!h && isTracerHandler(h));
+      if (handlers[index].url !== desired.url || handlers[index].timeout !== desired.timeout) {
+        handlers[index] = { ...handlers[index], ...desired };
+        updated = true;
+      }
+      if (matcher !== undefined && ownerGroup.matcher !== matcher) {
+        ownerGroup.matcher = matcher;
+        updated = true;
+      }
+      continue;
+    }
+
+    // Reuse an existing group with the same matcher so we don't fragment the config.
+    const sameMatcher = usable.find(g => (g.matcher ?? undefined) === matcher);
+    if (sameMatcher) {
+      sameMatcher.hooks = [...(Array.isArray(sameMatcher.hooks) ? sameMatcher.hooks : []), desired];
+    } else {
+      const group: ClaudeHookMatcherGroup = matcher === undefined ? { hooks: [desired] } : { matcher, hooks: [desired] };
+      groups.push(group);
+    }
+    hooks[event] = groups;
+    added = true;
+  }
+
+  if (!added && !updated) return { action: 'already_set' };
+
+  settings.hooks = hooks;
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  return { action: added ? 'added' : 'updated' };
+}
+
 
 // ── Detection helpers ─────────────────────────────────────────────────────────
 
 function detectCopilotCli(): { found: boolean; path?: string; version?: string } {
   try {
-    const p = execSync('which copilot', { encoding: 'utf8' }).trim();
-    const v = execSync('copilot --version 2>/dev/null || true', { encoding: 'utf8' }).trim();
-    return { found: true, path: p, version: v.split('\n')[0] };
+    const p = execSync(isWindows() ? 'where copilot' : 'which copilot', { encoding: 'utf8' }).trim().split('\n')[0];
+    let version: string | undefined;
+    try {
+      version = execSync('copilot --version', { encoding: 'utf8' }).trim().split('\n')[0];
+    } catch {
+      // version lookup is best-effort; presence of the binary is what matters
+    }
+    return { found: true, path: p, version };
   } catch {
     return { found: false };
   }
@@ -93,9 +329,13 @@ function detectVSCode(): { found: boolean; path?: string; version?: string; hasB
     const hasBuiltinCopilot = major > 1 || (major === 1 && minor >= 99);
     return { found: true, version, hasBuiltinCopilot };
   } catch {
-    // Try app bundle directly
-    const appPath = '/Applications/Visual Studio Code.app';
-    if (fs.existsSync(appPath)) {
+    // Try well-known install locations directly
+    const appPath = process.platform === 'darwin'
+      ? '/Applications/Visual Studio Code.app'
+      : isWindows()
+        ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Microsoft VS Code', 'Code.exe')
+        : null;
+    if (appPath && fs.existsSync(appPath)) {
       return { found: true, hasBuiltinCopilot: true, version: 'unknown (app found)' };
     }
     return { found: false, hasBuiltinCopilot: false };
@@ -103,6 +343,20 @@ function detectVSCode(): { found: boolean; path?: string; version?: string; hasB
 }
 
 function detectShellProfile(): string | null {
+  if (isWindows()) {
+    const candidates = [
+      // PowerShell 7+ ($PROFILE for `pwsh`)
+      path.join(os.homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+      // Windows PowerShell 5.1 ($PROFILE for `powershell.exe`)
+      path.join(os.homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+    // Default to the PowerShell 7+ profile (create it)
+    return candidates[0];
+  }
+
   const candidates = [
     path.join(os.homedir(), '.zshrc'),
     path.join(os.homedir(), '.zprofile'),
@@ -116,9 +370,20 @@ function detectShellProfile(): string | null {
   return path.join(os.homedir(), '.zshrc');
 }
 
+/** VS Code's per-platform key for `terminal.integrated.env.*`. */
+function getVSCodeEnvKey(): string {
+  if (process.platform === 'darwin') return 'terminal.integrated.env.osx';
+  if (isWindows()) return 'terminal.integrated.env.windows';
+  return 'terminal.integrated.env.linux';
+}
+
 function getVSCodeSettingsPath(): string {
   if (process.platform === 'darwin') {
     return path.join(os.homedir(), 'Library/Application Support/Code/User/settings.json');
+  }
+  if (isWindows()) {
+    const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'Code', 'User', 'settings.json');
   }
   // Linux (and WSL)
   return path.join(os.homedir(), '.config/Code/User/settings.json');
@@ -173,13 +438,19 @@ function patchShellProfile(profilePath: string, port: number): { action: 'added'
   const content = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
   const block = otelEnvBlock(port);
 
+  // The PowerShell profile dir (Documents\PowerShell or \WindowsPowerShell) often
+  // doesn't exist yet — unlike ~/.zshrc's parent, which is always the home dir.
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+
   // Already has our block?
   if (content.includes('copilot-tracer OTLP config')) {
-    // Check if port matches
-    if (content.includes(`http://localhost:${port}`)) {
+    // Only skip if the embedded block is byte-identical to what we'd generate now —
+    // a marker + matching port isn't enough, since the block's env vars can gain new
+    // keys (e.g. Claude Code support) between tracer versions without the port changing.
+    if (content.includes(block)) {
       return { action: 'already_set' };
     }
-    // Port changed — update
+    // Block is stale (port changed, or vars were added/changed) — replace it in place
     const updated = content.replace(
       /# >>> copilot-tracer OTLP config[\s\S]*?# <<< copilot-tracer <<</,
       block
@@ -206,16 +477,13 @@ function patchVSCodeSettings(settingsPath: string, port: number): { action: 'add
     return { action: 'skipped', reason: 'could not parse settings.json' };
   }
 
-  const envKey = 'terminal.integrated.env.osx';
+  const envKey = getVSCodeEnvKey();
   const existing = (settings[envKey] ?? {}) as Record<string, string>;
   const newEnv = vscodeEnvBlock(port);
 
-  // Check if already set correctly
-  if (
-    existing[OTEL_ENDPOINT_KEY] === `http://localhost:${port}` &&
-    existing[OTEL_CONTENT_KEY] === 'true' &&
-    existing[OTEL_ENABLED_KEY] === 'true'
-  ) {
+  // Already set correctly only if every current key/value is present — checking a
+  // hardcoded subset let newer keys (e.g. Claude Code support) silently go unset.
+  if (Object.entries(newEnv).every(([k, v]) => existing[k] === v)) {
     return { action: 'already_set' };
   }
 
@@ -268,15 +536,16 @@ export function runSetup(port: number, silent = false): void {
   if (profilePath) {
     const result = patchShellProfile(profilePath, port);
     const label = path.basename(profilePath);
+    const reload = isWindows() ? `. ${profilePath}` : `source ${profilePath}`;
     if (result.action === 'added') {
       console.log(`\n${CHECK} Shell profile patched: ${label}`);
-      console.log(`   ${ARROW} Added OTEL env vars (endpoint, content capture)`);
+      console.log(`   ${ARROW} Added Copilot + Claude Code OTLP env vars`);
       console.log(`   ${ARROW} Added copilot() wrapper — tags each prompt with the terminal folder`);
-      console.log(`   ${ARROW} Run: source ${profilePath}`);
+      console.log(`   ${ARROW} Run: ${reload}`);
     } else if (result.action === 'updated') {
       console.log(`\n${CHECK} Shell profile updated: ${label}`);
-      console.log(`   ${ARROW} Updated port to ${port} + copilot() wrapper`);
-      console.log(`   ${ARROW} Run: source ${profilePath}`);
+      console.log(`   ${ARROW} Updated port to ${port} + Claude Code/Copilot OTLP config`);
+      console.log(`   ${ARROW} Run: ${reload}`);
     } else {
       console.log(`\n${CHECK} Shell profile: already configured (${label})`);
     }
@@ -288,7 +557,7 @@ export function runSetup(port: number, silent = false): void {
     const result = patchVSCodeSettings(settingsPath, port);
     if (result.action === 'added') {
       console.log(`\n${CHECK} VS Code settings patched`);
-      console.log(`   ${ARROW} Added terminal.integrated.env.osx with OTEL vars`);
+      console.log(`   ${ARROW} Added ${getVSCodeEnvKey()} with OTEL vars`);
       console.log(`   ${ARROW} Restart VS Code to apply`);
     } else if (result.action === 'updated') {
       console.log(`\n${CHECK} VS Code settings updated`);
@@ -323,17 +592,41 @@ export function runSetup(port: number, silent = false): void {
     console.log(`   Install: https://opencode.ai/docs — rerun --setup afterward`);
   }
 
-  // 6. Apply env vars to the current process so the OTLP receiver works immediately
+  // 6. Patch Claude Code hooks (turn/tool lifecycle — OTLP can't correlate multi-prompt sessions)
+  const claudeSettingsPath = getClaudeSettingsPath();
+  const claudeResult = patchClaudeSettings(claudeSettingsPath, port);
+  if (claudeResult.action === 'added') {
+    console.log(`\n${CHECK} Claude Code hooks installed`);
+    console.log(`   ${ARROW} ~/.claude/settings.json → ${claudeHookUrl(port)}`);
+    console.log(`   ${ARROW} Captures every prompt, tool call and turn (merged with your existing hooks)`);
+    console.log(`   ${ARROW} Restart Claude Code to apply`);
+  } else if (claudeResult.action === 'updated') {
+    console.log(`\n${CHECK} Claude Code hooks updated`);
+    console.log(`   ${ARROW} Endpoint now ${claudeHookUrl(port)}`);
+    console.log(`   ${ARROW} Restart Claude Code to apply`);
+  } else if (claudeResult.action === 'already_set') {
+    console.log(`\n${CHECK} Claude Code hooks: already configured`);
+  } else {
+    console.log(`\n${WARN} Claude Code hooks: ${claudeResult.reason}`);
+  }
+
+  // 7. Apply env vars to the current process so the OTLP receiver works immediately
   process.env[OTEL_ENDPOINT_KEY]  = `http://localhost:${port}`;
   process.env[OTEL_CONTENT_KEY]   = 'true';
   process.env[OTEL_ENABLED_KEY]   = 'true';
+  process.env[CLAUDE_TELEMETRY_KEY] = '1';
+  process.env[CLAUDE_TRACES_KEY] = '1';
+  process.env[OTEL_LOGS_EXPORTER_KEY] = 'otlp';
+  process.env[OTEL_TRACES_EXPORTER_KEY] = 'otlp';
+  process.env[OTEL_PROTOCOL_KEY] = 'http/json';
+  process.env[OTEL_LOG_PROMPTS_KEY] = '1';
+  process.env[OTEL_LOG_RESPONSES_KEY] = '1';
 
-  // 6. Summary
+  // 8. Summary
   if (!silent) {
-    const profileBase = profilePath ? path.basename(profilePath) : '.zshrc';
     console.log('\n────────────────────────────────────────────────');
     console.log('  One manual step required:\n');
-    console.log(`  source ~/${profileBase}`);
+    console.log(`  ${isWindows() ? `. ${profilePath}` : `source ${profilePath}`}`);
     console.log(`  (opens a new terminal already? — env is already active there)`);
     if (vscode.found) console.log('\n  Restart VS Code once to pick up the new terminal env.');
     console.log('\n  ✨ Starting tracer web UI now...');
