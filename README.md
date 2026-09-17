@@ -58,15 +58,16 @@ Open **http://localhost:4747** to see the dashboard.
 ┌─────────────────────────────────────────────────────────┐
 │  copilot-tracer --daemon (runs once, stays running)      │
 │                                                          │
-│  OTLP Receiver ← Copilot CLI + Claude Code + VS Code                   │
-│  (auto-detects project from github.copilot.git.repository)│
+│  OTLP Receiver ← Copilot CLI + Claude Code + Codex CLI + VS Code       │
+│  (auto-detects project from github.copilot.git.repository / codex.cwd)│
 │                                                          │
 │  SQLite DB → Dashboard + Live Tracer (Socket.io)         │
 └─────────────────────────────────────────────────────────┘
 
-Copilot CLI / Claude Code / VS Code Copilot Chat
+Copilot CLI / Claude Code / Codex CLI / VS Code Copilot Chat
          │
          │  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4747
+         │  (Codex CLI instead uses its own [otel] block in ~/.codex/config.toml)
          ↓
    POST /v1/traces and /v1/logs (OpenTelemetry OTLP JSON)
          │
@@ -238,6 +239,28 @@ your session continues normally.
 
 If hooks are unavailable (older Claude Code, `disableAllHooks`, remote sessions), the
 tracer falls back to its original OTLP-only handling.
+
+### OpenAI Codex CLI
+
+Codex CLI ships its own OTLP exporter (`codex-otel`) that emits **log** records —
+`codex.conversation_starts`, `codex.user_prompt`, `codex.tool_decision`,
+`codex.turn_cost`, `codex.sse_event` — to the same `/v1/logs` route Claude Code uses.
+It's configured via a `[otel]` table in `~/.codex/config.toml`, not environment
+variables:
+
+```toml
+[otel]
+environment = "dev"
+exporter = { otlp-http = { endpoint = "http://localhost:4747", protocol = "binary" } }
+log_user_prompt = true
+```
+
+`copilot-tracer --setup` detects a local Codex CLI install and writes this block for
+you (leaving any existing `[otel]` config alone with a warning instead of overwriting
+it). Codex sessions are namespaced (`codex:...`) so they never collide with Copilot or
+Claude Code sessions, and cost is computed from `src/codexPricing.ts`'s OpenAI rate
+table. As with Claude Code, an unrecognized Codex event is ignored rather than causing
+an error.
 
 For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
 
