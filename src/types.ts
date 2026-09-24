@@ -71,11 +71,24 @@ export interface DashboardProject {
   totalCredits: number;
   lastActiveAt: string | null;
   lastSession: { id: string; tokens: number; credits: number } | null;
+  workItems: DashboardWorkItemSummary;
+}
+
+/** Work-item rollup shown on a project card. */
+export interface DashboardWorkItemSummary {
+  active: number;
+  detected: number;
+  completed: number;
+  total: number;
+  ticketReferences: number;
+  unlinkedPrompts: number;
+  recent: Array<{ id: string; title: string; status: WorkItemStatus; updatedAt: string }>;
 }
 
 export interface DashboardData {
   projects: DashboardProject[];
   totals: { projects: number; sessions: number; tokens: number; credits: number };
+  workItemTotals: { active: number; detected: number; completed: number; unlinkedPrompts: number };
   pagination: {
     page: number;
     pageSize: number;
@@ -86,12 +99,23 @@ export interface DashboardData {
 
 // ── Work items ────────────────────────────────────────────────────────────────
 
-export type WorkItemStatus = 'active' | 'done' | 'archived';
+export type WorkItemStatus =
+  | 'detected'
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'completed'
+  | 'archived';
 export type WorkItemSource = 'detected' | 'manual';
 export type WorkItemSummarySource = 'generated' | 'user';
 export type WorkItemLinkSource = 'detected' | 'manual';
 
-export const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = ['active', 'done', 'archived'];
+export const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = [
+  'detected', 'active', 'paused', 'blocked', 'completed', 'archived',
+];
+
+/** Statuses that mean the work is no longer being carried out. */
+export const WORK_ITEM_CLOSED_STATUSES: readonly WorkItemStatus[] = ['completed', 'archived'];
 
 export interface WorkItemReference {
   type: TicketReferenceType;
@@ -175,4 +199,14 @@ export interface WorkItemTraceLinkInput {
 export interface WorkItemEvidenceResult {
   status: 'linked' | 'uncategorized';
   workItemIds: string[];
+}
+
+/** Why a prompt was taken out of the uncategorized inbox. */
+export type WorkItemDismissReason = 'ignored' | 'unrelated';
+
+export const WORK_ITEM_DISMISS_REASONS: readonly WorkItemDismissReason[] = ['ignored', 'unrelated'];
+
+export interface DismissedTrace extends WorkItemTraceSummary {
+  reason: WorkItemDismissReason;
+  dismissedAt: string;
 }

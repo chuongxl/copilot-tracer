@@ -15,7 +15,7 @@
 All nine tasks are implemented on `feature/work-items-productivity`.
 Extraction, persistence, the ingestion trigger, the management APIs, the project
 workspace UI, deterministic summary drafts, git evidence, and the grouping
-evaluation all ship with verification. 48 unit and persistence assertions, 29
+evaluation all ship with verification. 64 unit and persistence assertions, 42
 end-to-end assertions, and a 24-fixture grouping evaluation all pass.
 
 Deliberate changes from the original task text:
@@ -598,12 +598,12 @@ Before opening each pull request:
 - [x] Dedicated feature branch is used. `feature/work-items-productivity`.
 - [x] `npx tsc --noEmit` passes.
 - [x] `git diff --check` passes.
-- [x] Isolated verifier passes. 48 unit, 29 end-to-end, 24 evaluation fixtures.
+- [x] Isolated verifier passes. 64 unit, 42 end-to-end, 24 evaluation fixtures.
 - [x] Existing dashboard and live-tracer routes still load. `/index.html`, `/api/dashboard` and `/api/traces` all return 200 from a fresh daemon.
 - [x] Raw trace payloads remain unchanged. Work items live in three new tables and link by trace id.
 - [x] Duplicate extraction is idempotent. Asserted in both scripts.
 - [x] Invalid API input returns explicit errors. 400 for bad kind, status, title and criteria; 404 for unknown ids; 409 for unconfirmed completion.
-- [x] Browser evidence includes the user action and resulting state. Screenshots under `artifacts/verify-work-items/run-workspace/`, not committed.
+- [x] Browser evidence includes the user action and resulting state. Screenshots committed under `docs/screenshot/work-items/`.
 - [x] No generated artifacts or local databases are committed. `artifacts/` is git-ignored and every script uses a temp `COPILOT_TRACER_HOME`.
 
 ## First recommended slice

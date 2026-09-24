@@ -5,9 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
-import { applyWorkItemDraft, CompletionNotConfirmedError, refreshWorkItemEvidence, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
+import { applyWorkItemDraft, CompletionNotConfirmedError, dismissTrace, getDismissedTraces, mergeWorkItems, refreshWorkItemEvidence, restoreDismissedTrace, splitWorkItem, WorkItemMergeError, WorkItemSplitError, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
 import { isWorkItemKind } from './workItemExtraction.js';
-import { WORK_ITEM_STATUSES } from './types.js';
+import { WORK_ITEM_DISMISS_REASONS, WORK_ITEM_STATUSES } from './types.js';
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
 import { registerClaudeHookRoutes } from './claudeHooks.js';
@@ -146,6 +146,39 @@ ${prompt.trim()}`;
         }
         res.json(getUncategorizedTraces(req.params.id, limit));
     });
+    // Inbox triage. Dismissing hides a prompt from the inbox; the trace is kept.
+    app.post('/api/projects/:id/uncategorized-traces/:traceId/dismiss', (req, res) => {
+        if (!projectExists(req.params.id)) {
+            res.status(404).json({ error: 'project not found' });
+            return;
+        }
+        const { reason } = req.body;
+        if (reason !== undefined
+            && !WORK_ITEM_DISMISS_REASONS.includes(reason)) {
+            res.status(400).json({ error: `reason must be one of ${WORK_ITEM_DISMISS_REASONS.join(', ')}` });
+            return;
+        }
+        const ok = dismissTrace(req.params.id, req.params.traceId, reason ?? 'ignored');
+        if (!ok) {
+            res.status(404).json({ error: 'trace not found in this project' });
+            return;
+        }
+        res.json({ traceId: req.params.traceId, reason: reason ?? 'ignored' });
+    });
+    app.get('/api/projects/:id/dismissed-traces', (req, res) => {
+        if (!projectExists(req.params.id)) {
+            res.status(404).json({ error: 'project not found' });
+            return;
+        }
+        res.json(getDismissedTraces(req.params.id));
+    });
+    app.delete('/api/projects/:id/dismissed-traces/:traceId', (req, res) => {
+        if (!restoreDismissedTrace(req.params.id, req.params.traceId)) {
+            res.status(404).json({ error: 'dismissed trace not found' });
+            return;
+        }
+        res.status(204).end();
+    });
     app.post('/api/projects/:id/work-items/backfill', (req, res) => {
         if (!projectExists(req.params.id)) {
             res.status(404).json({ error: 'project not found' });
@@ -244,6 +277,54 @@ ${prompt.trim()}`;
             return;
         }
         res.json(updated);
+    });
+    // Fold other work items into this one. Raw traces are never deleted.
+    app.post('/api/work-items/:id/merge', (req, res) => {
+        const { sourceIds } = req.body;
+        if (!Array.isArray(sourceIds) || sourceIds.some((v) => typeof v !== 'string')) {
+            res.status(400).json({ error: 'sourceIds must be an array of work item ids' });
+            return;
+        }
+        try {
+            res.json(mergeWorkItems(req.params.id, sourceIds));
+        }
+        catch (error) {
+            if (error instanceof WorkItemMergeError) {
+                res.status(400).json({ error: error.message });
+                return;
+            }
+            throw error;
+        }
+    });
+    // Move some prompts out into a new work item.
+    app.post('/api/work-items/:id/split', (req, res) => {
+        const { title, traceIds, kind } = req.body;
+        if (typeof title !== 'string' || !title.trim()) {
+            res.status(400).json({ error: 'title is required' });
+            return;
+        }
+        if (!Array.isArray(traceIds) || traceIds.some((v) => typeof v !== 'string')) {
+            res.status(400).json({ error: 'traceIds must be an array of trace ids' });
+            return;
+        }
+        if (kind !== undefined && !isWorkItemKind(kind)) {
+            res.status(400).json({ error: 'kind is not a known work item kind' });
+            return;
+        }
+        try {
+            res.status(201).json(splitWorkItem(req.params.id, {
+                title: title.trim(),
+                traceIds: traceIds,
+                kind: kind,
+            }));
+        }
+        catch (error) {
+            if (error instanceof WorkItemSplitError) {
+                res.status(400).json({ error: error.message });
+                return;
+            }
+            throw error;
+        }
     });
     // Re-read git for this work item. Read-only, and never changes status.
     app.post('/api/work-items/:id/refresh-evidence', (req, res) => {

@@ -2,7 +2,14 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import type { TraceEntry, SessionSummary, TokenUsage, DashboardData } from './types.js';
+import type {
+  TraceEntry,
+  SessionSummary,
+  TokenUsage,
+  DashboardData,
+  DashboardWorkItemSummary,
+  WorkItemStatus,
+} from './types.js';
 
 // Overridable so a verification run can point at a throwaway database instead of
 // polluting the user's real trace history.
@@ -98,9 +105,17 @@ db.exec(`
     PRIMARY KEY (work_item_id, reference_type, reference_key)
   );
 
+  CREATE TABLE IF NOT EXISTS work_item_dismissed_traces (
+    trace_id TEXT PRIMARY KEY REFERENCES traces(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    reason TEXT NOT NULL DEFAULT 'ignored',
+    dismissed_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project_id);
   CREATE INDEX IF NOT EXISTS idx_work_item_traces_trace ON work_item_traces(trace_id);
   CREATE INDEX IF NOT EXISTS idx_work_item_refs_lookup ON work_item_references(reference_type, reference_key);
+  CREATE INDEX IF NOT EXISTS idx_work_item_dismissed_project ON work_item_dismissed_traces(project_id);
 `);
 
 // Migrate existing DBs
@@ -113,6 +128,9 @@ try { db.prepare('ALTER TABLE work_items ADD COLUMN evidence_checked_at TEXT').r
 try { db.prepare('ALTER TABLE work_items ADD COLUMN completion_note TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE projects ADD COLUMN local_path TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run(); } catch {}
+// The status vocabulary gained detected/paused/blocked and renamed done to
+// completed, so existing rows carry the old spelling forward.
+try { db.prepare("UPDATE work_items SET status = 'completed' WHERE status = 'done'").run(); } catch {}
 
 // Exposed so companion modules (work items) can query without opening a second
 // connection to the same file.
@@ -186,6 +204,60 @@ export function createSession(id: string, projectId?: string): void {
   `).run(id, new Date().toISOString(), projectId ?? null);
 }
 
+/**
+ * Work-item rollup for one project card. Kept here rather than in
+ * workItemService so the dashboard query does not import the whole service.
+ */
+function getProjectWorkItemSummary(projectId: string): DashboardWorkItemSummary {
+  const counts = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      COALESCE(SUM(status = 'active'), 0) as active,
+      COALESCE(SUM(status = 'detected'), 0) as detected,
+      COALESCE(SUM(status = 'completed'), 0) as completed
+    FROM work_items WHERE project_id = ?
+  `).get(projectId) as Record<string, number>;
+
+  const references = db.prepare(`
+    SELECT COUNT(DISTINCT r.reference_type || '|' || r.reference_key) as count
+    FROM work_item_references r
+    JOIN work_items wi ON wi.id = r.work_item_id
+    WHERE wi.project_id = ?
+  `).get(projectId) as { count: number };
+
+  const unlinked = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM traces t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE s.project_id = ?
+      AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
+  `).get(projectId) as { count: number };
+
+  const recent = db.prepare(`
+    SELECT id, title, status, updated_at
+    FROM work_items
+    WHERE project_id = ? AND status NOT IN ('archived')
+    ORDER BY updated_at DESC
+    LIMIT 3
+  `).all(projectId) as Array<Record<string, unknown>>;
+
+  return {
+    total: counts.total,
+    active: counts.active,
+    detected: counts.detected,
+    completed: counts.completed,
+    ticketReferences: references.count,
+    unlinkedPrompts: unlinked.count,
+    recent: recent.map((r) => ({
+      id: r.id as string,
+      title: r.title as string,
+      status: r.status as WorkItemStatus,
+      updatedAt: r.updated_at as string,
+    })),
+  };
+}
+
 export function getDashboard(page = 1, pageSize = 12): DashboardData {
   const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get() as { count: number };
   const totalProjects = projectCount.count;
@@ -237,8 +309,26 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
       totalCredits: (p.total_credits as number) || 0,
       lastActiveAt: p.last_active_at as string | null,
       lastSession: lastSession ?? null,
+      workItems: getProjectWorkItemSummary(p.id as string),
     };
   });
+
+  const workItemTotals = db.prepare(`
+    SELECT
+      COALESCE(SUM(status = 'active'), 0) as active,
+      COALESCE(SUM(status = 'detected'), 0) as detected,
+      COALESCE(SUM(status = 'completed'), 0) as completed
+    FROM work_items
+  `).get() as Record<string, number>;
+
+  const unlinkedTotal = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM traces t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE s.project_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
+  `).get() as { count: number };
 
   return {
     projects: enriched,
@@ -247,6 +337,12 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
       sessions: totals.sessions,
       tokens: totals.tokens,
       credits: totals.credits,
+    },
+    workItemTotals: {
+      active: workItemTotals.active,
+      detected: workItemTotals.detected,
+      completed: workItemTotals.completed,
+      unlinkedPrompts: unlinkedTotal.count,
     },
     pagination: {
       page: currentPage,

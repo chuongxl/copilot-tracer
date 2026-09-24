@@ -212,9 +212,23 @@ async function main() {
 
   console.log('manual grouping');
 
-  await check('refuses to mark an item done without confirmation', async () => {
+  await check('a detected work item starts unconfirmed', async () => {
+    const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    assert.equal(res.body.status, 'detected');
+    assert.equal(res.body.source, 'detected');
+  });
+
+  await check('confirming moves a detected item to active', async () => {
     const res = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(workItemId)}`, {
-      status: 'done',
+      status: 'active',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, 'active');
+  });
+
+  await check('refuses to mark an item completed without confirmation', async () => {
+    const res = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(workItemId)}`, {
+      status: 'completed',
     });
     assert.equal(res.status, 409);
     assert.equal(res.body.needsConfirmation, true);
@@ -228,7 +242,7 @@ async function main() {
       title: 'ABC-123 dashboard filters',
       summary: 'Ship the project filter',
       kind: 'task',
-      status: 'done',
+      status: 'completed',
       confirmCompletion: true,
       completionNote: 'merged by hand',
     });
@@ -236,15 +250,18 @@ async function main() {
     assert.equal(res.body.title, 'ABC-123 dashboard filters');
     assert.equal(res.body.summary, 'Ship the project filter');
     assert.equal(res.body.kind, 'task');
-    assert.equal(res.body.status, 'done');
+    assert.equal(res.body.status, 'completed');
     assert.equal(res.body.summarySource, 'user');
   });
 
   await check('filters the project list by status', async () => {
-    const done = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items?status=done`);
-    assert.equal(done.body.length, 1);
+    const completed = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items?status=completed`);
+    assert.equal(completed.body.length, 1);
     const active = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items?status=active`);
     assert.equal(active.body.length, 0);
+    const paused = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items?status=paused`);
+    assert.equal(paused.status, 200);
+    assert.equal(paused.body.length, 0);
   });
 
   let manualId = null;
@@ -275,6 +292,75 @@ async function main() {
     const res = await request('DELETE', `${base}/api/work-items/${encodeURIComponent(manualId)}/traces/${encodeURIComponent(orphanTraceId)}`);
     assert.equal(res.status, 200);
     assert.equal(res.body.traceCount, 0);
+  });
+
+  console.log('inbox triage');
+
+  await check('ignoring a prompt takes it out of the inbox', async () => {
+    const before = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
+    assert.ok(before.body.some((t) => t.id === orphanTraceId), 'orphan prompt should start in the inbox');
+
+    const res = await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(orphanTraceId)}/dismiss`,
+      { reason: 'unrelated' },
+    );
+    assert.equal(res.status, 200);
+
+    const after = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
+    assert.ok(!after.body.some((t) => t.id === orphanTraceId), 'dismissed prompt is still in the inbox');
+  });
+
+  await check('a dismissed prompt is listed with its reason and the trace survives', async () => {
+    const res = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/dismissed-traces`);
+    assert.equal(res.status, 200);
+    const row = res.body.find((t) => t.id === orphanTraceId);
+    assert.ok(row, 'dismissed prompt missing from the list');
+    assert.equal(row.reason, 'unrelated');
+
+    const trace = await request('GET', `${base}/api/traces`);
+    assert.ok(trace.body.some((t) => t.id === orphanTraceId), 'dismissal must not delete the trace');
+  });
+
+  await check('restoring puts the prompt back in the inbox', async () => {
+    const res = await request(
+      'DELETE',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/dismissed-traces/${encodeURIComponent(orphanTraceId)}`,
+    );
+    assert.equal(res.status, 204);
+
+    const inbox = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
+    assert.ok(inbox.body.some((t) => t.id === orphanTraceId), 'restored prompt is not back in the inbox');
+  });
+
+  await check('linking a dismissed prompt clears the dismissal', async () => {
+    await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(orphanTraceId)}/dismiss`,
+      {},
+    );
+    await request('POST', `${base}/api/work-items/${encodeURIComponent(manualId)}/traces`, { traceId: orphanTraceId });
+
+    const dismissed = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/dismissed-traces`);
+    assert.ok(!dismissed.body.some((t) => t.id === orphanTraceId), 'link should clear the dismissal');
+
+    await request('DELETE', `${base}/api/work-items/${encodeURIComponent(manualId)}/traces/${encodeURIComponent(orphanTraceId)}`);
+  });
+
+  await check('rejects an unknown dismissal reason and a foreign trace', async () => {
+    const bad = await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(orphanTraceId)}/dismiss`,
+      { reason: 'whatever' },
+    );
+    assert.equal(bad.status, 400);
+
+    const missing = await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/trace:nope/dismiss`,
+      {},
+    );
+    assert.equal(missing.status, 404);
   });
 
   console.log('drafts');
@@ -325,6 +411,127 @@ async function main() {
     assert.equal((await request('GET', `${base}/api/work-items/work-item:nope/draft`)).status, 404);
   });
 
+  console.log('merge and split');
+
+  let mergeTargetId = null;
+  let mergeSourceId = null;
+
+  await check('merge moves prompts and references onto the target', async () => {
+    const target = await request('POST', `${base}/api/work-items`, { projectId, title: 'Target item' });
+    const source = await request('POST', `${base}/api/work-items`, { projectId, title: 'Source item' });
+    mergeTargetId = target.body.id;
+    mergeSourceId = source.body.id;
+
+    await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeSourceId)}/traces`, { traceId: orphanTraceId });
+    await request('PATCH', `${base}/api/work-items/${encodeURIComponent(mergeSourceId)}`, {
+      acceptanceCriteria: ['the retry budget is capped'],
+    });
+
+    const res = await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/merge`, {
+      sourceIds: [mergeSourceId],
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.traceCount, 1);
+    assert.ok(res.body.acceptanceCriteria.includes('the retry budget is capped'));
+    assert.ok(res.body.traces.some((t) => t.id === orphanTraceId));
+
+    const gone = await request('GET', `${base}/api/work-items/${encodeURIComponent(mergeSourceId)}`);
+    assert.equal(gone.status, 404);
+  });
+
+  await check('merge keeps the raw trace and rejects bad input', async () => {
+    const traces = await request('GET', `${base}/api/traces`);
+    assert.ok(traces.body.some((t) => t.id === orphanTraceId), 'merge must not delete traces');
+
+    assert.equal((await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/merge`, {
+      sourceIds: [mergeTargetId],
+    })).status, 400);
+    assert.equal((await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/merge`, {
+      sourceIds: ['work-item:nope'],
+    })).status, 400);
+    assert.equal((await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/merge`, {
+      sourceIds: 'nope',
+    })).status, 400);
+  });
+
+  await check('split moves picked prompts into a new work item', async () => {
+    const projectTraces = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/traces`);
+    const spare = projectTraces.body.find((t) => t.id !== orphanTraceId);
+    assert.ok(spare, 'need a spare prompt to split');
+    await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/traces`, { traceId: spare.id });
+
+    const res = await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/split`, {
+      title: 'Split off work',
+      traceIds: [spare.id],
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.created.title, 'Split off work');
+    assert.equal(res.body.created.traceCount, 1);
+    assert.equal(res.body.created.source, 'manual');
+    assert.equal(res.body.source.traceCount, 1);
+    assert.ok(!res.body.source.traces.some((t) => t.id === spare.id));
+  });
+
+  await check('split refuses to empty the original or move a foreign prompt', async () => {
+    const item = await request('GET', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}`);
+    const all = item.body.traces.map((t) => t.id);
+
+    const emptied = await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/split`, {
+      title: 'Everything', traceIds: all,
+    });
+    assert.equal(emptied.status, 400);
+
+    const foreign = await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/split`, {
+      title: 'Nope', traceIds: ['trace:nope'],
+    });
+    assert.equal(foreign.status, 400);
+
+    const untitled = await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeTargetId)}/split`, {
+      title: '   ', traceIds: all.slice(0, 1),
+    });
+    assert.equal(untitled.status, 400);
+  });
+
+  console.log('dashboard rollup');
+
+  await check('the dashboard reports work item counts per project', async () => {
+    const res = await request('GET', `${base}/api/dashboard`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.workItemTotals, 'workItemTotals missing from the dashboard');
+    assert.equal(typeof res.body.workItemTotals.active, 'number');
+    assert.equal(typeof res.body.workItemTotals.unlinkedPrompts, 'number');
+
+    const project = res.body.projects.find((p) => p.id === projectId);
+    assert.ok(project, 'project missing from the dashboard');
+    assert.ok(project.workItems, 'project card carries no work item rollup');
+    assert.ok(project.workItems.total > 0, 'expected at least one work item on the card');
+    assert.equal(typeof project.workItems.ticketReferences, 'number');
+    assert.equal(typeof project.workItems.unlinkedPrompts, 'number');
+    assert.ok(Array.isArray(project.workItems.recent));
+    assert.ok(project.workItems.recent.length <= 3, 'recent list should be capped at 3');
+  });
+
+  await check('a dismissed prompt stops counting as unlinked', async () => {
+    const inbox = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
+    if (!inbox.body.length) return;
+    const victim = inbox.body[0].id;
+
+    const before = await request('GET', `${base}/api/dashboard`);
+    const beforeCount = before.body.projects.find((p) => p.id === projectId).workItems.unlinkedPrompts;
+
+    await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(victim)}/dismiss`,
+      {},
+    );
+
+    const after = await request('GET', `${base}/api/dashboard`);
+    const afterCount = after.body.projects.find((p) => p.id === projectId).workItems.unlinkedPrompts;
+    assert.equal(afterCount, beforeCount - 1);
+
+    await request('DELETE', `${base}/api/projects/${encodeURIComponent(projectId)}/dismissed-traces/${encodeURIComponent(victim)}`);
+  });
+
   console.log('git evidence');
 
   await check('records evidence without changing status', async () => {
@@ -368,6 +575,19 @@ async function main() {
     assert.ok(html.includes('id="wi-evidence"'), 'evidence panel missing');
     assert.ok(html.includes('refreshEvidence'), 'evidence refresh control missing');
     assert.ok(html.includes('confirmCompletion'), 'completion confirmation missing');
+    assert.ok(html.includes('dismissInboxTrace'), 'inbox dismiss control missing');
+    assert.ok(html.includes('Mark unrelated'), 'mark unrelated control missing');
+    assert.ok(html.includes('restoreInboxTrace'), 'restore control missing');
+    assert.ok(html.includes('id="inbox-dismissed"'), 'dismissed list missing');
+    assert.ok(html.includes('mergeWorkItem'), 'merge control missing');
+    assert.ok(html.includes('splitWorkItemPrompt'), 'split control missing');
+    assert.ok(html.includes('confirmWorkItem'), 'confirm control missing');
+    assert.ok(html.includes('wi-split-pick'), 'split prompt selection missing');
+    assert.ok(html.includes('dash-project-work-items'), 'dashboard work item block missing');
+    assert.ok(html.includes('workItemTotals'), 'dashboard work item totals missing');
+    for (const status of ['detected', 'paused', 'blocked', 'completed']) {
+      assert.ok(html.includes(`<option value="${status}">`), `status filter is missing ${status}`);
+    }
     assert.ok(html.includes("location.hash='#/project?project="), 'project card does not open the workspace');
     assert.ok(html.includes("'project'"), 'project route is not registered');
   });
