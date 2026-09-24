@@ -286,3 +286,24 @@ recovered weeks after the work happened. The number is measuring exactly the
 gap it was designed to measure. Once the daemon runs with detection live, new
 items should land near zero and the average should fall as they accumulate.
 That decay is the signal worth watching.
+
+## Removing empty work item creation
+
+The workspace had a "New work item" button that made an item from nothing but a
+title you typed. Asked what it was for, I could not give a straight answer, and
+the measurement says it was actively harmful: creating one empty item on the
+real database moved credits per item from 308.39 to 269.84. A row with no
+observed work behind it drags every per-item average down.
+
+This is a tracer. An item that no prompt produced is a plan, and planning tools
+live elsewhere. The button is gone.
+
+Grouping prompts by hand still matters, because 92% of real prompts carry no
+ticket key and would otherwise never group. That case is served from the Inbox,
+where "Group into new item" starts from a prompt you are looking at and names
+the group around it. Observation first, name second.
+
+The API now enforces this rather than trusting the UI. `POST /api/work-items`
+requires a `traceId`, links it in the same call, and deletes the item if the
+link fails. That last part also fixes a real bug: the old two-step flow left an
+orphaned empty item behind whenever the attach step failed.

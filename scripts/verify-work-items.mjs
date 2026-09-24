@@ -137,6 +137,26 @@ async function main() {
   assert.ok(project, `project for ${repoUrl} was not created`);
   const projectId = project.id;
 
+  // A work item must start from a prompt, so tests that need an item ingest a
+  // throwaway prompt and consume it in the same step. It never sits in the
+  // inbox long enough to disturb the counts other checks assert on.
+  let spareSeq = 0;
+  async function promptForNewItem(text) {
+    spareSeq += 1;
+    const traceId = String(spareSeq).padStart(2, 'a').repeat(16).slice(0, 32);
+    await request('POST', `${base}/v1/traces`, otlpPayload({
+      sessionId: 'verify-session-spare',
+      repoUrl,
+      prompt: text,
+      traceId,
+      spanId: traceId.slice(0, 16),
+    }));
+    const inbox = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
+    const found = inbox.body.find((t) => t.prompt === text);
+    assert.ok(found, `throwaway prompt "${text}" did not reach the inbox`);
+    return found.id;
+  }
+
   console.log('detected work items');
 
   let workItemId = null;
@@ -305,23 +325,44 @@ async function main() {
 
   let manualId = null;
 
-  await check('creates a manual work item', async () => {
+  await check('creates a manual work item from a prompt', async () => {
+    const seed = await promptForNewItem('unticketed spelunking through the cache layer');
     const res = await request('POST', `${base}/api/work-items`, {
       projectId,
       title: 'Exploration',
       summary: 'Unticketed spelunking',
       kind: 'investigation',
+      traceId: seed,
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.source, 'manual');
-    assert.equal(res.body.traceCount, 0);
+    // The seed prompt is linked by the same call that made the item.
+    assert.equal(res.body.traceCount, 1);
     manualId = res.body.id;
+  });
+
+  await check('refuses to create a work item with no prompt behind it', async () => {
+    const res = await request('POST', `${base}/api/work-items`, { projectId, title: 'Empty plan' });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /traceId is required/);
+
+    const unknown = await request('POST', `${base}/api/work-items`, {
+      projectId, title: 'Ghost prompt', traceId: 'trace-nope',
+    });
+    assert.equal(unknown.status, 404);
+
+    const items = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items`);
+    assert.ok(!items.body.some((i) => i.title === 'Empty plan' || i.title === 'Ghost prompt'),
+      'a rejected create must not leave an item behind');
   });
 
   await check('attaches an unlinked trace', async () => {
     const res = await request('POST', `${base}/api/work-items/${encodeURIComponent(manualId)}/traces`, { traceId: orphanTraceId });
     assert.equal(res.status, 200);
-    assert.equal(res.body.traceCount, 1);
+    // The seed prompt plus this one.
+    assert.equal(res.body.traceCount, 2);
+    // The attached prompt is not the first, so it supports rather than leads.
+    assert.equal(res.body.traces.find((t) => t.id === orphanTraceId).relationship, 'supporting');
 
     const inbox = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
     assert.equal(inbox.body.length, 0);
@@ -330,7 +371,7 @@ async function main() {
   await check('detaches a trace', async () => {
     const res = await request('DELETE', `${base}/api/work-items/${encodeURIComponent(manualId)}/traces/${encodeURIComponent(orphanTraceId)}`);
     assert.equal(res.status, 200);
-    assert.equal(res.body.traceCount, 0);
+    assert.equal(res.body.traceCount, 1);
   });
 
   console.log('inbox triage');
@@ -443,9 +484,9 @@ async function main() {
       projectId,
       title: 'Draft target',
       kind: 'unknown',
+      traceId: orphanTraceId,
     });
     draftItemId = created.body.id;
-    await request('POST', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/traces`, { traceId: orphanTraceId });
 
     const preview = await request('GET', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/draft`);
     assert.equal(preview.status, 200);
@@ -488,12 +529,11 @@ async function main() {
   let mergeSourceId = null;
 
   await check('merge moves prompts and references onto the target', async () => {
-    const target = await request('POST', `${base}/api/work-items`, { projectId, title: 'Target item' });
-    const source = await request('POST', `${base}/api/work-items`, { projectId, title: 'Source item' });
+    const targetSeed = await promptForNewItem('tidy up the merge target notes');
+    const target = await request('POST', `${base}/api/work-items`, { projectId, title: 'Target item', traceId: targetSeed });
+    const source = await request('POST', `${base}/api/work-items`, { projectId, title: 'Source item', traceId: orphanTraceId });
     mergeTargetId = target.body.id;
     mergeSourceId = source.body.id;
-
-    await request('POST', `${base}/api/work-items/${encodeURIComponent(mergeSourceId)}/traces`, { traceId: orphanTraceId });
     await request('PATCH', `${base}/api/work-items/${encodeURIComponent(mergeSourceId)}`, {
       acceptanceCriteria: ['the retry budget is capped'],
     });
@@ -502,7 +542,8 @@ async function main() {
       sourceIds: [mergeSourceId],
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.traceCount, 1);
+    // The target's own seed prompt plus the one the source brought over.
+    assert.equal(res.body.traceCount, 2);
     assert.ok(res.body.acceptanceCriteria.includes('the retry budget is capped'));
     assert.ok(res.body.traces.some((t) => t.id === orphanTraceId));
 
@@ -853,10 +894,8 @@ async function main() {
     const created = (await request('POST', `${base}/api/work-items`, {
       projectId,
       title: 'Cycle time check',
-    })).body;
-    await request('POST', `${base}/api/work-items/${encodeURIComponent(created.id)}/traces`, {
       traceId: suggestedTraceId,
-    });
+    })).body;
 
     const before = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/analytics`)).body;
     const openRow = before.topByCredits.concat(before.recentlyCompleted).find((r) => r.id === created.id);

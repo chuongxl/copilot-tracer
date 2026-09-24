@@ -453,7 +453,6 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       <div class="ws-actions">
         <button type="button" class="ws-btn" id="ws-live-btn" onclick="openLiveForCurrentProject()">Open live tracer</button>
         <button type="button" class="ws-btn" id="ws-backfill-btn" onclick="runBackfill()">Group past traces</button>
-        <button type="button" class="ws-btn" id="ws-new-btn" onclick="startNewWorkItem()">New work item</button>
       </div>
     </div>
 
@@ -1143,18 +1142,6 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     }
   }
 
-  async function startNewWorkItem() {
-    if (!workspaceProjectId) return;
-    const title = prompt('Work item title');
-    if (!title || !title.trim()) return;
-    try {
-      await api('POST', '/api/work-items', { projectId: workspaceProjectId, title: title.trim() });
-      showWorkspaceTab('work-items');
-    } catch (e) {
-      showWorkspaceError(e.message);
-    }
-  }
-
   // ── Inbox ──────────────────────────────────────
   async function loadInbox() {
     if (!workspaceProjectId) return;
@@ -1189,7 +1176,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
           <span class="inbox-time">${fmtDateTime(t.dateTime)}</span>
           <div class="inbox-actions">
             <button type="button" class="ws-btn" onclick="attachTrace('${escHtml(t.id)}')">Attach</button>
-            <button type="button" class="ws-btn" onclick="createWorkItemFromTrace('${escHtml(t.id)}')">New item</button>
+            <button type="button" class="ws-btn" onclick="createWorkItemFromTrace('${escHtml(t.id)}')">Group into new item</button>
             <button type="button" class="ws-btn" onclick="dismissInboxTrace('${escHtml(t.id)}', 'ignored')" title="Hide from the inbox. The trace is kept.">Ignore</button>
             <button type="button" class="ws-btn" onclick="dismissInboxTrace('${escHtml(t.id)}', 'unrelated')" title="Not project work. The trace is kept.">Mark unrelated</button>
           </div>
@@ -1305,11 +1292,10 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   }
 
   async function createWorkItemFromTrace(traceId) {
-    const title = prompt('Title for the new work item');
+    const title = prompt('Name the work item this prompt belongs to');
     if (!title || !title.trim()) return;
     try {
-      const created = await api('POST', '/api/work-items', { projectId: workspaceProjectId, title: title.trim() });
-      await api('POST', `/api/work-items/${encodeURIComponent(created.id)}/traces`, { traceId });
+      await api('POST', '/api/work-items', { projectId: workspaceProjectId, title: title.trim(), traceId });
       loadInbox();
     } catch (e) {
       showWorkspaceError(e.message);

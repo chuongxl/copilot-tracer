@@ -251,7 +251,7 @@ ${prompt.trim()}`;
         res.json(item);
     });
     app.post('/api/work-items', (req, res) => {
-        const { projectId, title, summary, kind, status } = req.body;
+        const { projectId, title, summary, kind, status, traceId } = req.body;
         if (!projectId || typeof projectId !== 'string') {
             res.status(400).json({ error: 'projectId is required' });
             return;
@@ -272,7 +272,18 @@ ${prompt.trim()}`;
             res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
             return;
         }
-        res.status(201).json(createWorkItem({
+        // A work item describes observed work, so it must start from a prompt.
+        // An empty item is a plan, and it drags the per-item averages down with a
+        // row that has nothing behind it.
+        if (!traceId || typeof traceId !== 'string') {
+            res.status(400).json({ error: 'traceId is required: a work item must start from a prompt' });
+            return;
+        }
+        if (!getTrace(traceId)) {
+            res.status(404).json({ error: 'trace not found' });
+            return;
+        }
+        const created = createWorkItem({
             projectId,
             title: title.trim(),
             summary: typeof summary === 'string' ? summary : null,
@@ -280,7 +291,21 @@ ${prompt.trim()}`;
             status,
             source: 'manual',
             summarySource: 'user',
-        }));
+        });
+        try {
+            linkTraceToWorkItem({ workItemId: created.id, traceId, linkSource: 'manual', confidence: 1 });
+        }
+        catch (error) {
+            // Creating then failing to link would leave exactly the empty item this
+            // endpoint refuses to make, so undo it.
+            deleteWorkItem(created.id);
+            if (error instanceof WorkItemProjectMismatchError) {
+                res.status(400).json({ error: error.message });
+                return;
+            }
+            throw error;
+        }
+        res.status(201).json(getWorkItem(created.id));
     });
     app.patch('/api/work-items/:id', (req, res) => {
         const { title, summary, kind, status, acceptanceCriteria, confirmCompletion, completionNote } = req.body;
