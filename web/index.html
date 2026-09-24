@@ -974,6 +974,14 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
         <div class="wi-generated-note">${item.summarySource === 'user' ? 'Edited by you' : 'Generated from the first prompt. Editing marks it as yours.'}</div>
       </div>
 
+      <div class="wi-detail-field">
+        <label for="wi-edit-criteria">Acceptance criteria</label>
+        <textarea id="wi-edit-criteria" placeholder="One per line">${escHtml((item.acceptanceCriteria || []).join('\n'))}</textarea>
+        <div class="wi-generated-note">${item.criteriaSource === 'user'
+          ? 'Edited by you. Regenerating leaves these alone.'
+          : 'Generated from prompts. One per line. Editing marks them as yours.'}</div>
+      </div>
+
       <div class="wi-detail-row">
         <div class="wi-detail-field">
           <label for="wi-edit-kind">Kind</label>
@@ -991,6 +999,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
       <div class="ws-actions" style="margin-bottom:18px">
         <button type="button" class="ws-btn" id="wi-save-btn" onclick="saveWorkItem()">Save changes</button>
+        <button type="button" class="ws-btn" id="wi-draft-btn" onclick="regenerateDraft()">Generate draft</button>
         <button type="button" class="ws-btn danger" onclick="removeWorkItem()">Delete work item</button>
         <span class="ws-status" id="wi-save-status"></span>
       </div>
@@ -1023,9 +1032,26 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
         summary: document.getElementById('wi-edit-summary').value,
         kind: document.getElementById('wi-edit-kind').value,
         status: document.getElementById('wi-edit-status').value,
+        acceptanceCriteria: document.getElementById('wi-edit-criteria').value
+          .split('\n').map(l => l.trim()).filter(Boolean),
       });
       renderWorkItemDetail(item);
       document.getElementById('wi-save-status').textContent = 'Saved';
+      loadWorkItems();
+    } catch (e) {
+      statusEl.textContent = e.message;
+    }
+  }
+
+  async function regenerateDraft() {
+    const statusEl = document.getElementById('wi-save-status');
+    statusEl.textContent = 'Generating…';
+    try {
+      const res = await api('POST', `/api/work-items/${encodeURIComponent(openWorkItemId)}/draft`, {});
+      renderWorkItemDetail(res.workItem);
+      document.getElementById('wi-save-status').textContent = res.applied.length
+        ? `Updated ${res.applied.join(', ')}`
+        : 'Nothing to update. Your edits were kept.';
       loadWorkItems();
     } catch (e) {
       statusEl.textContent = e.message;

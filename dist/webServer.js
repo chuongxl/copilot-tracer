@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
-import { backfillWorkItems, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
+import { applyWorkItemDraft, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
 import { isWorkItemKind } from './workItemExtraction.js';
 import { WORK_ITEM_STATUSES } from './types.js';
 import { traceEvents } from './proxy.js';
@@ -194,7 +194,7 @@ ${prompt.trim()}`;
         }));
     });
     app.patch('/api/work-items/:id', (req, res) => {
-        const { title, summary, kind, status } = req.body;
+        const { title, summary, kind, status, acceptanceCriteria } = req.body;
         if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
             res.status(400).json({ error: 'title must be a non-empty string' });
             return;
@@ -211,17 +211,47 @@ ${prompt.trim()}`;
             res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
             return;
         }
+        if (acceptanceCriteria !== undefined
+            && (!Array.isArray(acceptanceCriteria) || acceptanceCriteria.some((c) => typeof c !== 'string'))) {
+            res.status(400).json({ error: 'acceptanceCriteria must be an array of strings' });
+            return;
+        }
         const updated = updateWorkItem(req.params.id, {
             title: title,
             summary: summary,
             kind: kind,
             status: status,
+            acceptanceCriteria: acceptanceCriteria,
         });
         if (!updated) {
             res.status(404).json({ error: 'work item not found' });
             return;
         }
         res.json(updated);
+    });
+    // Preview a draft without saving it.
+    app.get('/api/work-items/:id/draft', (req, res) => {
+        const draft = buildWorkItemDraft(req.params.id);
+        if (!draft) {
+            res.status(404).json({ error: 'work item not found' });
+            return;
+        }
+        res.json(draft);
+    });
+    // Regenerate summary, criteria and kind from the linked prompts. Fields the
+    // user edited are preserved unless overwrite is explicitly requested.
+    app.post('/api/work-items/:id/draft', (req, res) => {
+        const { overwriteUserEdits } = req.body;
+        if (overwriteUserEdits !== undefined && typeof overwriteUserEdits !== 'boolean') {
+            res.status(400).json({ error: 'overwriteUserEdits must be a boolean' });
+            return;
+        }
+        const result = applyWorkItemDraft(req.params.id, { overwriteUserEdits: overwriteUserEdits === true });
+        if (!result) {
+            res.status(404).json({ error: 'work item not found' });
+            return;
+        }
+        res.json({ workItem: result.item, draft: result.draft, applied: result.applied });
     });
     app.delete('/api/work-items/:id', (req, res) => {
         if (!deleteWorkItem(req.params.id)) {

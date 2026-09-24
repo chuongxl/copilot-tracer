@@ -264,6 +264,54 @@ async function main() {
     assert.equal(res.body.traceCount, 0);
   });
 
+  console.log('drafts');
+
+  let draftItemId = null;
+
+  await check('generates a draft summary and criteria from linked prompts', async () => {
+    const created = await request('POST', `${base}/api/work-items`, {
+      projectId,
+      title: 'Draft target',
+      kind: 'unknown',
+    });
+    draftItemId = created.body.id;
+    await request('POST', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/traces`, { traceId: orphanTraceId });
+
+    const preview = await request('GET', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/draft`);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.promptCount, 1);
+
+    const res = await request('POST', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/draft`, {});
+    assert.equal(res.status, 200);
+    assert.ok(res.body.applied.includes('summary'));
+    assert.ok(res.body.workItem.summary);
+    assert.ok(res.body.workItem.draftGeneratorVersion);
+  });
+
+  await check('a user edit to criteria survives regeneration', async () => {
+    const edited = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(draftItemId)}`, {
+      acceptanceCriteria: ['only mine'],
+    });
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.body.acceptanceCriteria, ['only mine']);
+    assert.equal(edited.body.criteriaSource, 'user');
+
+    const again = await request('POST', `${base}/api/work-items/${encodeURIComponent(draftItemId)}/draft`, {});
+    assert.deepEqual(again.body.workItem.acceptanceCriteria, ['only mine']);
+    assert.ok(!again.body.applied.includes('acceptanceCriteria'));
+
+    assert.equal((await request('DELETE', `${base}/api/work-items/${encodeURIComponent(draftItemId)}`)).status, 200);
+  });
+
+  await check('rejects malformed criteria and unknown draft targets', async () => {
+    const bad = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(manualId)}`, {
+      acceptanceCriteria: 'not an array',
+    });
+    assert.equal(bad.status, 400);
+    assert.equal((await request('POST', `${base}/api/work-items/work-item:nope/draft`, {})).status, 404);
+    assert.equal((await request('GET', `${base}/api/work-items/work-item:nope/draft`)).status, 404);
+  });
+
   console.log('workspace ui');
 
   await check('serves the project workspace page and its controls', async () => {
@@ -277,6 +325,8 @@ async function main() {
     ]) {
       assert.ok(html.includes(`id="${id}"`), `missing element #${id}`);
     }
+    assert.ok(html.includes('wi-edit-criteria'), 'criteria editor missing from the detail modal');
+    assert.ok(html.includes('regenerateDraft'), 'generate draft control missing');
     assert.ok(html.includes("location.hash='#/project?project="), 'project card does not open the workspace');
     assert.ok(html.includes("'project'"), 'project route is not registered');
   });

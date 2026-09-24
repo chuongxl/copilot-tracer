@@ -242,3 +242,171 @@ export function deriveWorkItemSummary(prompt, maxLength = 180) {
 export function isWorkItemKind(value) {
     return typeof value === 'string' && WORK_ITEM_KINDS.includes(value);
 }
+// ── Draft generation ──────────────────────────────────────────────────────────
+//
+// Builds a title, summary and acceptance criteria from the prompts already
+// linked to a work item. Deterministic sentence selection, no model call: the
+// same prompts always produce the same draft, which is what makes the output
+// safe to regenerate over a user's edits without surprising them.
+export const DRAFT_GENERATOR_VERSION = '1.0.0';
+const CRITERIA_HEADING = /^\s*(acceptance criteria|requirements?|criteria|definition of done|must have)\s*:?\s*$/i;
+const BULLET = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/;
+const OBLIGATION = /\b(must|should|needs? to|has to|have to|required to|expected to)\b/i;
+function cleanLine(line) {
+    return line.replace(/\s+/g, ' ').replace(/^[\s>]+/, '').trim();
+}
+function splitSentences(text) {
+    return text
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => cleanLine(s))
+        .filter(Boolean);
+}
+/**
+ * Pull acceptance criteria out of prompt text. Two sources, in priority order:
+ * bullets under an "Acceptance criteria" style heading, then any line stating
+ * an obligation. Both are literal excerpts, never paraphrased.
+ */
+function collectCriteria(prompt) {
+    const lines = prompt.split('\n');
+    const headed = [];
+    const obligations = [];
+    let inSection = false;
+    for (const rawLine of lines) {
+        const line = cleanLine(rawLine);
+        if (CRITERIA_HEADING.test(rawLine)) {
+            inSection = true;
+            continue;
+        }
+        const bullet = BULLET.exec(rawLine);
+        if (inSection) {
+            // A blank line or a non-bullet paragraph ends the section.
+            if (!line)
+                continue;
+            if (bullet) {
+                headed.push(cleanLine(bullet[1]));
+                continue;
+            }
+            inSection = false;
+        }
+        if (!line)
+            continue;
+        if (bullet && OBLIGATION.test(bullet[1])) {
+            obligations.push(cleanLine(bullet[1]));
+        }
+        else if (!bullet && OBLIGATION.test(line)) {
+            for (const sentence of splitSentences(line)) {
+                if (OBLIGATION.test(sentence))
+                    obligations.push(sentence);
+            }
+        }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const candidate of [...headed, ...obligations]) {
+        const text = candidate.replace(/[.;]+$/, '').trim();
+        if (!text)
+            continue;
+        const key = text.toLowerCase();
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        out.push(text);
+    }
+    return out;
+}
+/** The first sentence that states intent, preferred over a bare greeting. */
+function pickObjective(prompt) {
+    const paragraph = prompt
+        .split('\n')
+        .map(cleanLine)
+        .find((line) => line && !CRITERIA_HEADING.test(line) && !BULLET.test(line));
+    if (!paragraph)
+        return cleanLine(prompt);
+    return splitSentences(paragraph)[0] ?? paragraph;
+}
+function titleCaseFirst(text) {
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+function truncate(text, maxLength) {
+    if (text.length <= maxLength)
+        return text;
+    return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+/** Normalize a criterion for duplicate detection: strip filler and punctuation. */
+function criterionKey(criterion) {
+    return criterion
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\b(remember|please|also|note|again|and|the|a|an|that|to)\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+export function generateWorkItemDraft(prompts) {
+    const texts = (prompts ?? [])
+        .map((p) => String(p?.prompt ?? ''))
+        .filter((t) => t.trim());
+    const empty = {
+        title: '',
+        summary: '',
+        acceptanceCriteria: [],
+        kind: 'unknown',
+        source: 'prompt',
+        generatorVersion: DRAFT_GENERATOR_VERSION,
+        promptCount: 0,
+    };
+    if (!texts.length)
+        return empty;
+    // The first prompt states the objective; later ones refine it. Criteria are
+    // gathered from all of them because requirements often arrive piecemeal.
+    const objective = pickObjective(texts[0]);
+    const criteria = [];
+    const keys = [];
+    for (const text of texts) {
+        for (const criterion of collectCriteria(text)) {
+            const key = criterionKey(criterion);
+            if (!key)
+                continue;
+            // The same requirement often reappears with a lead-in ("Remember, the API
+            // should …"), so an exact-match set is not enough. If one normalized form
+            // contains the other, keep the shorter, more canonical phrasing.
+            const clashIndex = keys.findIndex((k) => k === key || k.includes(key) || key.includes(k));
+            if (clashIndex >= 0) {
+                if (key.length < keys[clashIndex].length) {
+                    keys[clashIndex] = key;
+                    criteria[clashIndex] = criterion;
+                }
+                continue;
+            }
+            keys.push(key);
+            criteria.push(criterion);
+        }
+    }
+    // Kind is a majority vote across prompts; a single stray word should not
+    // reclassify a work item that five prompts agree is a bug.
+    const votes = new Map();
+    for (const text of texts) {
+        const { kind } = extractWorkItemEvidence(text);
+        if (kind !== 'unknown')
+            votes.set(kind, (votes.get(kind) ?? 0) + 1);
+    }
+    let kind = 'unknown';
+    let best = 0;
+    for (const [candidate, count] of votes) {
+        if (count > best) {
+            best = count;
+            kind = candidate;
+        }
+    }
+    const followUp = texts.length > 1
+        ? ` Refined across ${texts.length} prompts.`
+        : '';
+    return {
+        title: truncate(titleCaseFirst(objective.replace(/[.!?]+$/, '')), 120),
+        summary: truncate(titleCaseFirst(objective) + followUp, 400),
+        acceptanceCriteria: criteria.slice(0, 20),
+        kind,
+        source: 'prompt',
+        generatorVersion: DRAFT_GENERATOR_VERSION,
+        promptCount: texts.length,
+    };
+}

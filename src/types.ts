@@ -120,6 +120,9 @@ export interface WorkItem {
   status: WorkItemStatus;
   source: WorkItemSource;
   summarySource: WorkItemSummarySource;
+  acceptanceCriteria: string[];
+  criteriaSource: WorkItemSummarySource;
+  draftGeneratorVersion: string | null;
   confidence: number;
   extractorVersion: string | null;
   createdAt: string;
@@ -154,6 +157,7 @@ export interface UpdateWorkItemInput {
   summary?: string | null;
   kind?: WorkItemKind;
   status?: WorkItemStatus;
+  acceptanceCriteria?: string[];
 }
 
 export interface WorkItemTraceLinkInput {

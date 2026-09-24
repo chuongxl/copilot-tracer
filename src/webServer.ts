@@ -6,7 +6,9 @@ import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
 import {
+  applyWorkItemDraft,
   backfillWorkItems,
+  buildWorkItemDraft,
   createWorkItem,
   deleteWorkItem,
   getUncategorizedTraces,
@@ -235,8 +237,8 @@ ${prompt.trim()}`;
   });
 
   app.patch('/api/work-items/:id', (req, res) => {
-    const { title, summary, kind, status } = req.body as {
-      title?: unknown; summary?: unknown; kind?: unknown; status?: unknown;
+    const { title, summary, kind, status, acceptanceCriteria } = req.body as {
+      title?: unknown; summary?: unknown; kind?: unknown; status?: unknown; acceptanceCriteria?: unknown;
     };
 
     if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
@@ -255,12 +257,18 @@ ${prompt.trim()}`;
       res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
       return;
     }
+    if (acceptanceCriteria !== undefined
+      && (!Array.isArray(acceptanceCriteria) || acceptanceCriteria.some((c) => typeof c !== 'string'))) {
+      res.status(400).json({ error: 'acceptanceCriteria must be an array of strings' });
+      return;
+    }
 
     const updated = updateWorkItem(req.params.id, {
       title: title as string | undefined,
       summary: summary as string | null | undefined,
       kind: kind as WorkItemKind | undefined,
       status: status as WorkItemStatus | undefined,
+      acceptanceCriteria: acceptanceCriteria as string[] | undefined,
     });
 
     if (!updated) {
@@ -268,6 +276,33 @@ ${prompt.trim()}`;
       return;
     }
     res.json(updated);
+  });
+
+  // Preview a draft without saving it.
+  app.get('/api/work-items/:id/draft', (req, res) => {
+    const draft = buildWorkItemDraft(req.params.id);
+    if (!draft) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json(draft);
+  });
+
+  // Regenerate summary, criteria and kind from the linked prompts. Fields the
+  // user edited are preserved unless overwrite is explicitly requested.
+  app.post('/api/work-items/:id/draft', (req, res) => {
+    const { overwriteUserEdits } = req.body as { overwriteUserEdits?: unknown };
+    if (overwriteUserEdits !== undefined && typeof overwriteUserEdits !== 'boolean') {
+      res.status(400).json({ error: 'overwriteUserEdits must be a boolean' });
+      return;
+    }
+
+    const result = applyWorkItemDraft(req.params.id, { overwriteUserEdits: overwriteUserEdits === true });
+    if (!result) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json({ workItem: result.item, draft: result.draft, applied: result.applied });
   });
 
   app.delete('/api/work-items/:id', (req, res) => {

@@ -1,10 +1,11 @@
 import { randomUUID } from 'crypto';
 import { db, getSessionProjectId, setTracePersistedListener } from './db.js';
-import { AUTO_LINK_CONFIDENCE, deriveWorkItemSummary, extractWorkItemEvidence, } from './workItemExtraction.js';
+import { AUTO_LINK_CONFIDENCE, deriveWorkItemSummary, extractWorkItemEvidence, generateWorkItemDraft, } from './workItemExtraction.js';
 const AGGREGATE_SELECT = `
   SELECT
     wi.id, wi.project_id, wi.title, wi.summary, wi.kind, wi.status, wi.source,
     wi.summary_source, wi.confidence, wi.extractor_version, wi.created_at, wi.updated_at,
+    wi.acceptance_criteria, wi.draft_generator_version, wi.criteria_source,
     COUNT(wit.trace_id) AS trace_count,
     COALESCE(SUM(t.tokens_total), 0) AS total_tokens,
     COALESCE(SUM(t.ai_credits), 0) AS total_credits,
@@ -37,6 +38,17 @@ function loadReferences(workItemIds) {
     }
     return byItem;
 }
+function parseCriteria(raw) {
+    if (!raw)
+        return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+    }
+    catch {
+        return [];
+    }
+}
 function toWorkItem(row, references) {
     return {
         id: row.id,
@@ -47,6 +59,9 @@ function toWorkItem(row, references) {
         status: row.status,
         source: row.source,
         summarySource: row.summary_source,
+        acceptanceCriteria: parseCriteria(row.acceptance_criteria),
+        criteriaSource: (row.criteria_source ?? 'generated'),
+        draftGeneratorVersion: row.draft_generator_version,
         confidence: row.confidence,
         extractorVersion: row.extractor_version,
         createdAt: row.created_at,
@@ -188,6 +203,10 @@ export function updateWorkItem(id, input) {
         sets.push('summary = ?', "summary_source = 'user'");
         params.push(input.summary);
     }
+    if (input.acceptanceCriteria !== undefined) {
+        sets.push('acceptance_criteria = ?', "criteria_source = 'user'");
+        params.push(JSON.stringify(input.acceptanceCriteria));
+    }
     if (sets.length) {
         sets.push('updated_at = ?');
         params.push(new Date().toISOString(), id);
@@ -292,6 +311,65 @@ export function backfillWorkItems(projectId, limit = 5000) {
             linked += 1;
     }
     return { scanned: rows.length, linked };
+}
+// ── Draft generation ──────────────────────────────────────────────────────────
+/** Build a draft from a work item's linked prompts without saving it. */
+export function buildWorkItemDraft(workItemId) {
+    const item = db.prepare('SELECT id FROM work_items WHERE id = ?').get(workItemId);
+    if (!item)
+        return null;
+    const rows = db.prepare(`
+    SELECT t.prompt, t.date_time
+    FROM work_item_traces wit
+    JOIN traces t ON t.id = wit.trace_id
+    WHERE wit.work_item_id = ?
+    ORDER BY t.date_time ASC
+  `).all(workItemId);
+    return generateWorkItemDraft(rows.map((r) => ({ prompt: r.prompt, dateTime: r.date_time })));
+}
+/**
+ * Regenerate a work item's summary, criteria and kind from its prompts.
+ *
+ * Fields a person has edited are left alone unless `overwriteUserEdits` is set,
+ * so a regeneration triggered by new prompts cannot quietly discard their work.
+ * The title is never auto-replaced: for detected items it is the ticket key,
+ * which is the one piece of identity worth keeping stable.
+ */
+export function applyWorkItemDraft(workItemId, options = {}) {
+    const draft = buildWorkItemDraft(workItemId);
+    if (!draft)
+        return null;
+    const current = db.prepare('SELECT summary, summary_source, acceptance_criteria, criteria_source, kind FROM work_items WHERE id = ?').get(workItemId);
+    const sets = ['draft_generator_version = ?'];
+    const params = [draft.generatorVersion];
+    const applied = [];
+    // A blank field is never a user edit worth protecting, so fill it even when
+    // the source says 'user' (manual items start that way with nothing in them).
+    const summaryFree = options.overwriteUserEdits
+        || current.summary_source !== 'user'
+        || !current.summary?.trim();
+    if (draft.summary && summaryFree) {
+        sets.push('summary = ?', "summary_source = 'generated'");
+        params.push(draft.summary);
+        applied.push('summary');
+    }
+    const criteriaFree = options.overwriteUserEdits
+        || current.criteria_source !== 'user'
+        || parseCriteria(current.acceptance_criteria).length === 0;
+    if (draft.acceptanceCriteria.length && criteriaFree) {
+        sets.push('acceptance_criteria = ?', "criteria_source = 'generated'");
+        params.push(JSON.stringify(draft.acceptanceCriteria));
+        applied.push('acceptanceCriteria');
+    }
+    if (draft.kind !== 'unknown' && current.kind === 'unknown') {
+        sets.push('kind = ?');
+        params.push(draft.kind);
+        applied.push('kind');
+    }
+    sets.push('updated_at = ?');
+    params.push(new Date().toISOString(), workItemId);
+    db.prepare(`UPDATE work_items SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    return { item: getWorkItem(workItemId), draft, applied };
 }
 // Streaming updates re-persist the same trace many times. Remembering the last
 // prompt we extracted from keeps that off the hot path without changing results.

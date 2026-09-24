@@ -70,6 +70,9 @@ db.exec(`
     summary_source TEXT NOT NULL DEFAULT 'generated',
     confidence REAL NOT NULL DEFAULT 0,
     extractor_version TEXT,
+    acceptance_criteria TEXT,
+    draft_generator_version TEXT,
+    criteria_source TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -99,6 +102,9 @@ db.exec(`
 
 // Migrate existing DBs
 try { db.prepare('ALTER TABLE projects ADD COLUMN repo_url TEXT').run(); } catch {}
+try { db.prepare('ALTER TABLE work_items ADD COLUMN acceptance_criteria TEXT').run(); } catch {}
+try { db.prepare('ALTER TABLE work_items ADD COLUMN draft_generator_version TEXT').run(); } catch {}
+try { db.prepare('ALTER TABLE work_items ADD COLUMN criteria_source TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE projects ADD COLUMN local_path TEXT').run(); } catch {}
 try { db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run(); } catch {}
 

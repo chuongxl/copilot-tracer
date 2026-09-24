@@ -26,7 +26,7 @@ function check(name, fn) {
   }
 }
 
-const { extractWorkItemEvidence, deriveWorkItemSummary } = await import('../dist/workItemExtraction.js');
+const { extractWorkItemEvidence, deriveWorkItemSummary, generateWorkItemDraft } = await import('../dist/workItemExtraction.js');
 
 const bare = (refs) => refs.map((r) => ({ type: r.type, key: r.key }));
 
@@ -142,6 +142,67 @@ check('truncates a long single-sentence prompt', () => {
   assert.ok(summary.endsWith('…'));
 });
 
+// ── Draft generation ──────────────────────────────────────────────────────────
+
+console.log('drafts: summary and acceptance criteria');
+
+check('an empty prompt list yields an empty draft', () => {
+  const draft = generateWorkItemDraft([]);
+  assert.equal(draft.summary, '');
+  assert.deepEqual(draft.acceptanceCriteria, []);
+  assert.equal(draft.kind, 'unknown');
+  assert.equal(draft.promptCount, 0);
+});
+
+check('summary comes from the first prompt objective', () => {
+  const draft = generateWorkItemDraft([
+    { prompt: 'Add a project filter to the dashboard page so engineers can narrow traces.' },
+    { prompt: 'Also make it persist across reloads.' },
+  ]);
+  assert.ok(draft.summary.length > 0);
+  assert.ok(/project filter/i.test(draft.summary));
+  assert.equal(draft.promptCount, 2);
+  assert.equal(draft.source, 'prompt');
+});
+
+check('collects bullets under an acceptance criteria heading', () => {
+  const draft = generateWorkItemDraft([{
+    prompt: [
+      'Build the export button.',
+      'Acceptance criteria:',
+      '- Export produces a CSV file',
+      '- The file name contains the project name',
+    ].join('\n'),
+  }]);
+  assert.ok(draft.acceptanceCriteria.includes('Export produces a CSV file'));
+  assert.ok(draft.acceptanceCriteria.includes('The file name contains the project name'));
+});
+
+check('collects obligation sentences even without a heading', () => {
+  const draft = generateWorkItemDraft([
+    { prompt: 'Fix the login redirect. The session must survive a page reload.' },
+  ]);
+  assert.ok(draft.acceptanceCriteria.some((c) => /must survive a page reload/i.test(c)));
+});
+
+check('deduplicates criteria repeated across prompts', () => {
+  const draft = generateWorkItemDraft([
+    { prompt: 'The API should return 404 for unknown ids.' },
+    { prompt: 'Remember the API should return 404 for unknown ids.' },
+  ]);
+  const matches = draft.acceptanceCriteria.filter((c) => /404 for unknown ids/i.test(c));
+  assert.equal(matches.length, 1);
+});
+
+check('kind is a majority vote across prompts', () => {
+  const draft = generateWorkItemDraft([
+    { prompt: 'Fix the crash on startup, it is a bug.' },
+    { prompt: 'Another bug: the list fails to load.' },
+    { prompt: 'Add a new feature for exports.' },
+  ]);
+  assert.equal(draft.kind, 'bug');
+});
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 const service = await import('../dist/workItemService.js').catch(() => null);
@@ -149,7 +210,7 @@ const service = await import('../dist/workItemService.js').catch(() => null);
 if (!service) {
   console.error('\nwork item service not built yet; persistence checks skipped');
 } else {
-  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem } = service;
+  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, applyWorkItemDraft, buildWorkItemDraft } = service;
   const { ensureProject, createSession, upsertTrace } = await import('../dist/db.js');
 
   const projectId = ensureProject('/tmp/work-item-test-project');
@@ -264,6 +325,54 @@ if (!service) {
   check('filters work items by status', () => {
     assert.ok(getWorkItems(projectId, 'active').length > 0);
     assert.equal(getWorkItems(projectId, 'done').length, 0);
+  });
+
+  console.log('persistence: drafts');
+
+  check('applying a draft fills summary and criteria from linked prompts', () => {
+    const item = createWorkItem({ projectId, title: 'Draft target', kind: 'unknown' });
+    const trace = makeTrace('Add CSV export to the dashboard. The export must include the project name.');
+    linkTraceToWorkItem({ workItemId: item.id, traceId: trace.id, linkSource: 'manual' });
+
+    const result = applyWorkItemDraft(item.id);
+    assert.ok(result.applied.includes('summary'));
+    assert.ok(result.applied.includes('acceptanceCriteria'));
+    assert.ok(result.item.acceptanceCriteria.length > 0);
+    assert.equal(result.item.criteriaSource, 'generated');
+    assert.ok(result.item.draftGeneratorVersion);
+  });
+
+  check('a regenerated draft does not overwrite user edits', () => {
+    const item = createWorkItem({ projectId, title: 'Protected edits', kind: 'task' });
+    const trace = makeTrace('Ship the importer. It should validate headers.');
+    linkTraceToWorkItem({ workItemId: item.id, traceId: trace.id, linkSource: 'manual' });
+    applyWorkItemDraft(item.id);
+
+    updateWorkItem(item.id, { summary: 'my own words', acceptanceCriteria: ['mine only'] });
+    const after = applyWorkItemDraft(item.id);
+    assert.equal(after.item.summary, 'my own words');
+    assert.deepEqual(after.item.acceptanceCriteria, ['mine only']);
+    assert.equal(after.applied.length, 0);
+  });
+
+  check('overwriteUserEdits replaces user text on request', () => {
+    const item = createWorkItem({ projectId, title: 'Overwrite me', kind: 'task' });
+    linkTraceToWorkItem({
+      workItemId: item.id,
+      traceId: makeTrace('Rework the parser. It must handle empty files.').id,
+      linkSource: 'manual',
+    });
+    updateWorkItem(item.id, { summary: 'stale note', acceptanceCriteria: ['stale'] });
+
+    const after = applyWorkItemDraft(item.id, { overwriteUserEdits: true });
+    assert.notEqual(after.item.summary, 'stale note');
+    assert.notDeepEqual(after.item.acceptanceCriteria, ['stale']);
+    assert.equal(after.item.summarySource, 'generated');
+  });
+
+  check('applying a draft to an unknown work item returns null', () => {
+    assert.equal(applyWorkItemDraft('work-item:missing'), null);
+    assert.equal(buildWorkItemDraft('work-item:missing'), null);
   });
 }
 

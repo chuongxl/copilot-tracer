@@ -165,7 +165,9 @@ ignored.
 | `POST` | `/api/projects/:id/work-items/backfill` | Group traces captured before this feature existed |
 | `GET` | `/api/work-items/:id` | One work item with references and linked traces |
 | `POST` | `/api/work-items` | Create a work item by hand |
-| `PATCH` | `/api/work-items/:id` | Edit title, summary, kind, status |
+| `PATCH` | `/api/work-items/:id` | Edit title, summary, kind, status, acceptance criteria |
+| `GET` | `/api/work-items/:id/draft` | Preview a generated draft without saving it |
+| `POST` | `/api/work-items/:id/draft` | Regenerate summary, criteria and kind from linked prompts |
 | `DELETE` | `/api/work-items/:id` | Delete a work item |
 | `POST` | `/api/work-items/:id/traces` | Attach a trace (`{ "traceId": "..." }`) |
 | `DELETE` | `/api/work-items/:id/traces/:traceId` | Detach a trace |
@@ -185,8 +187,15 @@ Click a project card on the dashboard to open its workspace at
 
 **Work items tab.** One card per work item with its ticket reference, kind,
 status, linked prompt count, tokens, and cost. Filter by status. Click a card to
-edit the title, summary, kind, and status, or to unlink a prompt. Editing a
-generated summary marks it as yours, so it will not be overwritten later.
+edit the title, summary, kind, status, and acceptance criteria, or to unlink a
+prompt. Editing a generated summary or criteria marks them as yours, so they
+will not be overwritten later.
+
+**Generate draft.** Rebuilds the summary, acceptance criteria and kind from the
+prompts linked to the item. Criteria come from bullets under an "acceptance
+criteria" heading and from any line stating an obligation ("must", "should",
+"needs to"). Fields you edited are left alone. Nothing leaves your machine:
+the draft is plain text parsing, not a model call.
 
 **Inbox tab.** Prompts in the project that no work item has claimed. Attach one
 to an existing item or spin up a new item from it.
