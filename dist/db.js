@@ -312,8 +312,13 @@ function getProjectWorkItemSummary(projectId) {
         })),
     };
 }
-export function getDashboard(page = 1, pageSize = 12) {
-    const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get();
+export function getDashboard(page = 1, pageSize = 12, query = '') {
+    const filter = query.trim();
+    const filterClause = filter
+        ? 'WHERE LOWER(p.path) LIKE ? OR LOWER(COALESCE(p.local_path, \'\')) LIKE ? OR LOWER(COALESCE(p.repo_url, \'\')) LIKE ?'
+        : '';
+    const filterParams = filter ? [`%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`] : [];
+    const projectCount = db.prepare(`SELECT COUNT(*) as count FROM projects p ${filterClause}`).get(...filterParams);
     const totalProjects = projectCount.count;
     const totalPages = Math.max(1, Math.ceil(totalProjects / pageSize));
     const currentPage = Math.min(page, totalPages);
@@ -328,10 +333,11 @@ export function getDashboard(page = 1, pageSize = 12) {
     FROM projects p
     LEFT JOIN sessions s ON s.project_id = p.id
     LEFT JOIN traces t ON t.session_id = s.id
+    ${filterClause}
     GROUP BY p.id
     ORDER BY last_active_at DESC, p.id ASC
     LIMIT ? OFFSET ?
-  `).all(pageSize, offset);
+  `).all(...filterParams, pageSize, offset);
     const totals = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM projects) as projects,

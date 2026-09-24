@@ -311,8 +311,14 @@ function getProjectWorkItemSummary(projectId: string): DashboardWorkItemSummary 
   };
 }
 
-export function getDashboard(page = 1, pageSize = 12): DashboardData {
-  const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get() as { count: number };
+export function getDashboard(page = 1, pageSize = 12, query = ''): DashboardData {
+  const filter = query.trim();
+  const filterClause = filter
+    ? 'WHERE LOWER(p.path) LIKE ? OR LOWER(COALESCE(p.local_path, \'\')) LIKE ? OR LOWER(COALESCE(p.repo_url, \'\')) LIKE ?'
+    : '';
+  const filterParams = filter ? [`%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`] : [];
+
+  const projectCount = db.prepare(`SELECT COUNT(*) as count FROM projects p ${filterClause}`).get(...filterParams) as { count: number };
   const totalProjects = projectCount.count;
   const totalPages = Math.max(1, Math.ceil(totalProjects / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -328,10 +334,11 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
     FROM projects p
     LEFT JOIN sessions s ON s.project_id = p.id
     LEFT JOIN traces t ON t.session_id = s.id
+    ${filterClause}
     GROUP BY p.id
     ORDER BY last_active_at DESC, p.id ASC
     LIMIT ? OFFSET ?
-  `).all(pageSize, offset) as Record<string, unknown>[];
+  `).all(...filterParams, pageSize, offset) as Record<string, unknown>[];
 
   const totals = db.prepare(`
     SELECT

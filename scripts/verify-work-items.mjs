@@ -557,6 +557,51 @@ async function main() {
     assert.ok(project.workItems.recent.length <= 3, 'recent list should be capped at 3');
   });
 
+  // The project filter and the work item rollup share getDashboard. Filtering
+  // must narrow the project list without disturbing either the rollups on the
+  // surviving cards or the global headline totals.
+  await check('the project filter narrows the list and keeps rollups intact', async () => {
+    const res = await request('GET', `${base}/api/dashboard?q=verify-app`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.projects.length > 0, 'filter dropped the matching project');
+    for (const p of res.body.projects) {
+      const haystack = `${p.path} ${p.localPath ?? ''} ${p.repoUrl ?? ''}`.toLowerCase();
+      assert.ok(haystack.includes('verify-app'), `unmatched project survived the filter: ${p.id}`);
+    }
+
+    const filtered = res.body.projects.find((p) => p.id === projectId);
+    assert.ok(filtered, 'filtered result lost the project');
+    assert.ok(filtered.workItems, 'filtered project card lost its work item rollup');
+    assert.ok(filtered.workItems.total > 0, 'filtered project card lost its work item counts');
+    assert.equal(res.body.pagination.totalProjects, res.body.projects.length);
+  });
+
+  await check('the filter is case-insensitive and matches on a substring', async () => {
+    const res = await request('GET', `${base}/api/dashboard?q=VERIFY`);
+    assert.equal(res.status, 200);
+    assert.ok(
+      res.body.projects.some((p) => p.id === projectId),
+      'an upper-case query failed to match a lower-case path',
+    );
+  });
+
+  await check('a query that matches nothing returns an empty list, not an error', async () => {
+    const res = await request('GET', `${base}/api/dashboard?q=zzz-no-such-project-zzz`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.projects.length, 0);
+    assert.equal(res.body.pagination.totalProjects, 0);
+    // Headline totals describe the whole database, so they must survive a
+    // filter that empties the project list.
+    assert.ok(res.body.workItemTotals.open >= 0);
+    assert.ok(res.body.totals.projects > 0, 'global project total should ignore the filter');
+  });
+
+  await check('a filter with SQL wildcards is treated as literal text', async () => {
+    const res = await request('GET', `${base}/api/dashboard?q=${encodeURIComponent("%' OR '1'='1")}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.projects.length, 0, 'filter input reached the query as SQL');
+  });
+
   await check('a dismissed prompt stops counting as unlinked', async () => {
     const inbox = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`);
     if (!inbox.body.length) return;

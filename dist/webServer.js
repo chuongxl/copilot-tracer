@@ -93,13 +93,18 @@ ${prompt.trim()}`;
     app.get('/api/dashboard', (req, res) => {
         const pageParam = req.query.page;
         const pageSizeParam = req.query.pageSize;
+        const queryParam = req.query.q;
         const page = pageParam === undefined ? 1 : Number(pageParam);
         const pageSize = pageSizeParam === undefined ? 12 : Number(pageSizeParam);
         if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
             res.status(400).json({ error: 'page must be a positive integer and pageSize must be an integer between 1 and 100' });
             return;
         }
-        res.json(getDashboard(page, pageSize));
+        if (queryParam !== undefined && typeof queryParam !== 'string') {
+            res.status(400).json({ error: 'q must be a string' });
+            return;
+        }
+        res.json(getDashboard(page, pageSize, queryParam ?? ''));
     });
     // Project registration — CLI registers its local path for a project
     app.post('/api/projects', (req, res) => {

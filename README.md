@@ -126,6 +126,7 @@ Open http://localhost:4747 after starting the daemon.
 
 - **Summary cards** — total projects, sessions, tokens, credits
 - **Project cards** — each project shows path, session count, tokens, credits, last active
+- **Project filter** — search projects by path, local path, or repository URL
 - **Click a project** → opens live tracer filtered to that project
 <img width="737" height="410" alt="image" src="https://github.com/user-attachments/assets/dc20653b-8774-46b3-9a42-6e7bb934aded" />
 

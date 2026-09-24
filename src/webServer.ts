@@ -131,6 +131,7 @@ ${prompt.trim()}`;
   app.get('/api/dashboard', (req, res) => {
     const pageParam = req.query.page;
     const pageSizeParam = req.query.pageSize;
+    const queryParam = req.query.q;
     const page = pageParam === undefined ? 1 : Number(pageParam);
     const pageSize = pageSizeParam === undefined ? 12 : Number(pageSizeParam);
 
@@ -139,7 +140,12 @@ ${prompt.trim()}`;
       return;
     }
 
-    res.json(getDashboard(page, pageSize));
+    if (queryParam !== undefined && typeof queryParam !== 'string') {
+      res.status(400).json({ error: 'q must be a string' });
+      return;
+    }
+
+    res.json(getDashboard(page, pageSize, queryParam ?? ''));
   });
 
   // Project registration — CLI registers its local path for a project
