@@ -122,6 +122,13 @@ export type WorkItemSummarySource = 'generated' | 'user';
  */
 export type WorkItemLinkSource = 'detected' | 'manual' | 'similarity' | 'suggested';
 
+/**
+ * How a prompt relates to its work item. `primary` is the prompt the item was
+ * created from, `reference` is a passing mention below the auto-link bar, and
+ * `supporting` is everything else.
+ */
+export type WorkItemTraceRelationship = 'primary' | 'supporting' | 'reference';
+
 export const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = [
   'detected', 'active', 'paused', 'blocked', 'completed', 'archived',
 ];
@@ -149,6 +156,15 @@ export interface WorkItemTraceSummary {
   linkSource: WorkItemLinkSource;
 }
 
+/**
+ * A prompt that is actually linked to a work item. Inbox and dismissed rows
+ * reuse the summary above but have no relationship, because they are not
+ * linked to anything.
+ */
+export interface LinkedTraceSummary extends WorkItemTraceSummary {
+  relationship: WorkItemTraceRelationship;
+}
+
 export interface WorkItem {
   id: string;
   projectId: string;
@@ -168,13 +184,28 @@ export interface WorkItem {
   references: WorkItemReference[];
   ticketKey: string | null;
   traceCount: number;
+  sessionCount: number;
   totalTokens: number;
   totalCredits: number;
+  totalToolCalls: number;
+  totalSkills: number;
+  totalAgents: number;
+  totalMcps: number;
+  firstSeenAt: string | null;
   lastActiveAt: string | null;
+  /** Populated on detail reads only; the list view leaves it empty. */
+  statusHistory: WorkItemStatusEvent[];
+}
+
+/** One recorded status transition. `fromStatus` is null for the first event. */
+export interface WorkItemStatusEvent {
+  fromStatus: WorkItemStatus | null;
+  toStatus: WorkItemStatus;
+  changedAt: string;
 }
 
 export interface WorkItemDetail extends WorkItem {
-  traces: WorkItemTraceSummary[];
+  traces: LinkedTraceSummary[];
   gitEvidence: unknown | null;
   evidenceCheckedAt: string | null;
   completionNote: string | null;
@@ -303,6 +334,10 @@ export interface WorkItemSuccessMeasures {
   itemsCompleted: number;
   itemsCompletedWithEvidence: number;
   completionEvidenceRate: number;
+  /** Items whose context-recovery time could be measured. */
+  itemsWithRecoveryTime: number;
+  /** Mean gap between an item's first prompt and the item existing. */
+  avgContextRecoveryMs: number | null;
 }
 
 export interface WorkItemAnalyticsReport {

@@ -192,6 +192,25 @@ export function getSuccessMeasures(projectId?: string | null): WorkItemSuccessMe
     WHERE status = 'completed' ${projectId ? 'AND project_id = ?' : ''}
   `).get(...args) as { completed: number; with_evidence: number };
 
+  // The design's seventh measure: time from first prompt to recovered
+  // work-item context. Grouping is what recovers the context, so this is the
+  // gap between an item's earliest prompt and the moment the item existed.
+  // Auto-detection makes it near zero; a late backfill makes it large.
+  const recovery = db.prepare(`
+    SELECT wi.created_at AS created_at, MIN(t.date_time) AS first_prompt
+    FROM work_items wi
+    JOIN work_item_traces wit ON wit.work_item_id = wi.id
+    JOIN traces t ON t.id = wit.trace_id
+    ${projectId ? 'WHERE wi.project_id = ?' : ''}
+    GROUP BY wi.id
+  `).all(...args) as Array<{ created_at: string; first_prompt: string | null }>;
+
+  const recoveryTimes: number[] = [];
+  for (const row of recovery) {
+    const ms = msBetween(row.first_prompt, row.created_at);
+    if (ms !== null) recoveryTimes.push(ms);
+  }
+
   const autoAccepted = Math.max(0, autoLinks.total - unlinks.total);
 
   return {
@@ -210,6 +229,8 @@ export function getSuccessMeasures(projectId?: string | null): WorkItemSuccessMe
     itemsCompleted: completion.completed,
     itemsCompletedWithEvidence: completion.with_evidence,
     completionEvidenceRate: rate(completion.with_evidence, completion.completed),
+    itemsWithRecoveryTime: recoveryTimes.length,
+    avgContextRecoveryMs: mean(recoveryTimes),
   };
 }
 

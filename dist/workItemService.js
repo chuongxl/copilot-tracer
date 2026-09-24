@@ -10,8 +10,14 @@ const AGGREGATE_SELECT = `
     wi.acceptance_criteria, wi.draft_generator_version, wi.criteria_source,
     wi.git_evidence, wi.evidence_checked_at, wi.completion_note,
     COUNT(wit.trace_id) AS trace_count,
+    COUNT(DISTINCT t.session_id) AS session_count,
     COALESCE(SUM(t.tokens_total), 0) AS total_tokens,
     COALESCE(SUM(t.ai_credits), 0) AS total_credits,
+    COALESCE(SUM(t.tool_calls), 0) AS total_tool_calls,
+    COALESCE(SUM(t.skill_count), 0) AS total_skills,
+    COALESCE(SUM(t.agent_count), 0) AS total_agents,
+    COALESCE(SUM(t.mcp_count), 0) AS total_mcps,
+    MIN(t.date_time) AS first_seen_at,
     MAX(t.date_time) AS last_active_at
   FROM work_items wi
   LEFT JOIN work_item_traces wit ON wit.work_item_id = wi.id
@@ -73,9 +79,16 @@ function toWorkItem(row, references) {
         references,
         ticketKey: references.length ? references[0].key : null,
         traceCount: row.trace_count,
+        sessionCount: row.session_count,
         totalTokens: row.total_tokens,
         totalCredits: Number(row.total_credits.toFixed(6)),
+        totalToolCalls: row.total_tool_calls,
+        totalSkills: row.total_skills,
+        totalAgents: row.total_agents,
+        totalMcps: row.total_mcps,
+        firstSeenAt: row.first_seen_at,
         lastActiveAt: row.last_active_at,
+        statusHistory: [],
     };
 }
 // ── Reads ─────────────────────────────────────────────────────────────────────
@@ -91,6 +104,23 @@ export function getWorkItems(projectId, status) {
     const references = loadReferences(rows.map((row) => row.id));
     return rows.map((row) => toWorkItem(row, references.get(row.id) ?? []));
 }
+/**
+ * Status transitions, oldest first. The design asks the detail view to show
+ * status history, and cycle time is derived from the same rows.
+ */
+function loadStatusHistory(workItemId) {
+    const rows = db.prepare(`
+    SELECT from_status, to_status, changed_at
+    FROM work_item_status_history
+    WHERE work_item_id = ?
+    ORDER BY changed_at ASC, id ASC
+  `).all(workItemId);
+    return rows.map((r) => ({
+        fromStatus: (r.from_status ?? null),
+        toStatus: r.to_status,
+        changedAt: r.changed_at,
+    }));
+}
 export function getWorkItem(id) {
     const row = db.prepare(`
     ${AGGREGATE_SELECT}
@@ -101,7 +131,7 @@ export function getWorkItem(id) {
         return null;
     const traceRows = db.prepare(`
     SELECT t.id, t.session_id, t.date_time, t.prompt, t.tokens_total, t.ai_credits,
-           t.duration_ms, t.status, wit.link_source
+           t.duration_ms, t.status, wit.link_source, wit.relationship
     FROM work_item_traces wit
     JOIN traces t ON t.id = wit.trace_id
     WHERE wit.work_item_id = ?
@@ -117,8 +147,10 @@ export function getWorkItem(id) {
         durationMs: t.duration_ms ?? 0,
         status: t.status,
         linkSource: t.link_source,
+        relationship: (t.relationship ?? 'supporting'),
     }));
     const references = loadReferences([id]).get(id) ?? [];
+    const statusHistory = loadStatusHistory(id);
     let gitEvidence = null;
     if (row.git_evidence) {
         try {
@@ -130,6 +162,7 @@ export function getWorkItem(id) {
     }
     return {
         ...toWorkItem(row, references),
+        statusHistory,
         traces,
         gitEvidence,
         evidenceCheckedAt: row.evidence_checked_at ?? null,
@@ -489,11 +522,20 @@ export function linkTraceToWorkItem(input) {
     if (scope && scope.trace_project !== scope.item_project) {
         throw new WorkItemProjectMismatchError();
     }
+    // The design gives each link a relationship. It is derived, not asked for:
+    // the first prompt on an item is what the item is about, a weak reference is
+    // a passing mention, and everything else is supporting work.
+    const existing = db.prepare('SELECT COUNT(*) AS c FROM work_item_traces WHERE work_item_id = ?')
+        .get(input.workItemId);
+    const confidence = input.confidence ?? 0;
+    const relationship = existing.c === 0
+        ? 'primary'
+        : (confidence > 0 && confidence < AUTO_LINK_CONFIDENCE ? 'reference' : 'supporting');
     db.prepare(`
-    INSERT INTO work_item_traces (work_item_id, trace_id, linked_at, link_source, confidence)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO work_item_traces (work_item_id, trace_id, linked_at, link_source, confidence, relationship)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(work_item_id, trace_id) DO NOTHING
-  `).run(input.workItemId, input.traceId, new Date().toISOString(), input.linkSource ?? 'detected', input.confidence ?? 0);
+  `).run(input.workItemId, input.traceId, new Date().toISOString(), input.linkSource ?? 'detected', confidence, relationship);
     // Only a deliberate attach overrides a dismissal. If automatic extraction
     // cleared it too, re-running backfill would quietly resurrect every prompt
     // the user had already waved away.

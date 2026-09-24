@@ -194,7 +194,7 @@ try {
 }
 catch { }
 try {
-    db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'work'").run();
+    db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'supporting'").run();
 }
 catch { }
 // Items that predate the history table get one synthetic row, so cycle-time

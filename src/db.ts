@@ -174,7 +174,7 @@ try { db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES pro
 try { db.prepare("UPDATE work_items SET status = 'completed' WHERE status = 'done'").run(); } catch {}
 // Which prompt first produced a reference, and how a trace relates to its item.
 try { db.prepare('ALTER TABLE work_item_references ADD COLUMN source_trace_id TEXT REFERENCES traces(id)').run(); } catch {}
-try { db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'work'").run(); } catch {}
+try { db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'supporting'").run(); } catch {}
 // Items that predate the history table get one synthetic row, so cycle-time
 // queries do not silently skip them.
 try {

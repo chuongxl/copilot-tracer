@@ -221,3 +221,68 @@ keys only appear in prompts when someone types them, and mostly nobody does.
 The feature works correctly and covers a minority of real work. Raising that
 number is a product question, not a bug, and the panel is what makes the
 question answerable instead of guessable.
+
+## Closing the last design gaps
+
+A section-by-section audit against the design doc found four things the
+implementation had skipped, plus three places where the shipped code differs
+from the design on purpose.
+
+### What was missing, and is now built
+
+**Work totals on the item detail.** The design asked for tool, agent, MCP,
+token and credit totals. Only tokens and credits existed. The `traces` table
+already carried `tool_calls`, `skill_count`, `agent_count` and `mcp_count`, so
+the aggregate select now sums all four plus a distinct session count, and the
+detail panel shows them.
+
+**First seen and status history.** `work_item_status_history` was written on
+every status change and cleaned up on delete, but only analytics ever read it,
+and only for cycle time. The detail view now lists every transition with its
+timestamp, and shows the earliest linked prompt as First seen.
+
+**The `relationship` column was dead.** It existed, defaulted to `'work'`,
+which is not one of the design's three values, and nothing read or wrote it.
+Linking now derives it: the first prompt on an item is `primary`, a link made
+below the auto-link threshold is `reference`, everything else is `supporting`.
+The default is corrected to `supporting`.
+
+Worth noting that the type change had a trap. `relationship` first went on
+`WorkItemTraceSummary`, which the inbox and dismissed-prompt types both extend.
+Those describe prompts linked to nothing, so the field was meaningless there and
+the compiler said so. Linked prompts now have their own `LinkedTraceSummary`.
+
+**The seventh success measure.** Six of seven were implemented. The missing one
+is time from first prompt to recovered work-item context. Grouping is what
+recovers the context, so it is measured as the gap between an item's earliest
+prompt and the moment the item existed. Auto-detection makes it near zero. A
+backfill run weeks later makes it large, which is the point: it separates
+"caught it live" from "reconstructed it after the fact".
+
+### Deliberate deviations
+
+Three places differ from the design and stay that way.
+
+`WorkItemLinkSource` is `detected | manual | similarity | suggested` rather than
+the design's `ticket | keyword | similarity | manual | git`. The field records
+*how the link was decided*, not which signal fired, and the signal is already
+recoverable from the references table. `git` never became a linking signal at
+all, only evidence.
+
+`WorkItemSource` is `detected | manual` rather than `prompt | response | git |
+manual | combined`. Detection only ever reads prompts, so the finer split would
+be four dead values and one real one.
+
+The workspace tabs are Work items, Inbox and Productivity, not the design's
+Overview, Work items, Sessions and Traces. Sessions and traces already have
+their own pages, and an Overview tab above three tabs was a layer of chrome with
+nothing in it.
+
+### What the seventh measure reads on real data
+
+28.4 days, across 7 items. That is not a bug and not a failure. Backfill was
+run today over prompts going back to mid-August, so every item's context was
+recovered weeks after the work happened. The number is measuring exactly the
+gap it was designed to measure. Once the daemon runs with detection live, new
+items should land near zero and the average should fall as they accumulate.
+That decay is the signal worth watching.

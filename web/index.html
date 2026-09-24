@@ -1027,6 +1027,9 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
             ${measureRow('Completions with evidence', fmtPercent(m.completionEvidenceRate),
               `${m.itemsCompletedWithEvidence} of ${m.itemsCompleted}`,
               'Completed items backed by Git evidence or a written note.')}
+            ${measureRow('Time to recover context', fmtSpan(m.avgContextRecoveryMs),
+              `${m.itemsWithRecoveryTime} item${m.itemsWithRecoveryTime === 1 ? '' : 's'} measured`,
+              'From an item\u2019s first prompt to the item existing. Auto-detection is near zero; a late backfill is not.')}
           </div>
         </div>`;
     } catch (e) {
@@ -1094,6 +1097,25 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
           <div class="wi-meta-item">
             <span class="wi-meta-label">Est Cost</span>
             <span class="wi-meta-value credits">${fmtCredits(item.totalCredits)}</span>
+          </div>
+          ${item.totalToolCalls ? `
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Tools</span>
+            <span class="wi-meta-value">${item.totalToolCalls.toLocaleString()}</span>
+          </div>` : ''}
+          ${item.totalAgents ? `
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Agents</span>
+            <span class="wi-meta-value">${item.totalAgents.toLocaleString()}</span>
+          </div>` : ''}
+          ${item.totalMcps ? `
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">MCPs</span>
+            <span class="wi-meta-value">${item.totalMcps.toLocaleString()}</span>
+          </div>` : ''}
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">First seen</span>
+            <span class="wi-meta-value">${item.firstSeenAt ? fmtDateTime(item.firstSeenAt) : '—'}</span>
           </div>
           <div class="wi-meta-item">
             <span class="wi-meta-label">Last active</span>
@@ -1384,6 +1406,9 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       <div class="dash-section-title" style="padding:0 0 8px">Git evidence</div>
       <div id="wi-evidence">${renderEvidence(item)}</div>
 
+      <div class="dash-section-title" style="padding:16px 0 8px">Status history</div>
+      <div id="wi-status-history">${renderStatusHistory(item.statusHistory)}</div>
+
       <div class="dash-section-title" style="padding:16px 0 8px">Linked prompts (${item.traces.length})</div>
       <div>${traces}</div>
 
@@ -1395,6 +1420,30 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
         <div class="wi-meta-item">
           <span class="wi-meta-label">Est Cost</span>
           <span class="wi-meta-value credits">${fmtCredits(item.totalCredits)}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Sessions</span>
+          <span class="wi-meta-value">${(item.sessionCount ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Tool calls</span>
+          <span class="wi-meta-value">${(item.totalToolCalls ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Skills</span>
+          <span class="wi-meta-value">${(item.totalSkills ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Agents</span>
+          <span class="wi-meta-value">${(item.totalAgents ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">MCPs</span>
+          <span class="wi-meta-value">${(item.totalMcps ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">First seen</span>
+          <span class="wi-meta-value">${item.firstSeenAt ? fmtDateTime(item.firstSeenAt) : '—'}</span>
         </div>
         <div class="wi-meta-item">
           <span class="wi-meta-label">Created</span>
@@ -1431,6 +1480,20 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       }
       statusEl.textContent = e.message;
     }
+  }
+
+  function renderStatusHistory(history) {
+    if (!history || !history.length) {
+      return '<div style="color:#8b949e;font-size:12px;padding:4px 0">No status changes yet.</div>';
+    }
+    const rows = history.map((h) => `
+      <div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid #21262d;font-size:12px">
+        <span style="color:#8b949e;min-width:135px">${fmtDateTime(h.changedAt)}</span>
+        <span style="color:#8b949e">${h.fromStatus ? escHtml(h.fromStatus) : 'created'}</span>
+        <span style="color:#484f58">&rarr;</span>
+        <span style="color:#c9d1d9;font-weight:600">${escHtml(h.toStatus)}</span>
+      </div>`).join('');
+    return `<div>${rows}</div>`;
   }
 
   function renderEvidence(item) {

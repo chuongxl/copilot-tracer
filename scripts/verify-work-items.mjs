@@ -180,6 +180,29 @@ async function main() {
     assert.ok(res.body.summary.includes('ABC-123'));
   });
 
+  await check('the first linked prompt is primary and later ones are not', async () => {
+    const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    const primaries = res.body.traces.filter((t) => t.relationship === 'primary');
+    assert.equal(primaries.length, 1, 'exactly one prompt should be primary');
+    for (const t of res.body.traces) {
+      assert.ok(['primary', 'supporting', 'reference'].includes(t.relationship),
+        `unexpected relationship ${t.relationship}`);
+    }
+    assert.equal(res.body.traces.filter((t) => t.relationship === 'supporting').length, 1);
+  });
+
+  await check('detail carries session, tool, agent and MCP totals', async () => {
+    const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    for (const field of ['sessionCount', 'totalToolCalls', 'totalSkills', 'totalAgents', 'totalMcps']) {
+      assert.equal(typeof res.body[field], 'number', `${field} should be a number`);
+      assert.ok(res.body[field] >= 0, `${field} should not be negative`);
+    }
+    assert.ok(res.body.sessionCount >= 1, 'two prompts in one session is still one session');
+    assert.ok(res.body.firstSeenAt, 'first seen should be set');
+    // First seen comes from the prompts, so it cannot be after the last activity.
+    assert.ok(new Date(res.body.firstSeenAt) <= new Date(res.body.lastActiveAt));
+  });
+
   console.log('uncategorized inbox');
 
   let orphanTraceId = null;
@@ -231,6 +254,15 @@ async function main() {
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.status, 'active');
+  });
+
+  await check('the status change is recorded in the item history', async () => {
+    const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    assert.ok(Array.isArray(res.body.statusHistory), 'detail should carry status history');
+    const move = res.body.statusHistory.find((h) => h.toStatus === 'active');
+    assert.ok(move, 'the move to active should be recorded');
+    assert.equal(move.fromStatus, 'detected');
+    assert.ok(move.changedAt, 'the change should be timestamped');
   });
 
   await check('refuses to mark an item completed without confirmation', async () => {
@@ -803,6 +835,10 @@ async function main() {
     assert.ok(measures.tracesTotal > 0);
     assert.ok(measures.suggestionsDecided >= 2, 'one accept and one reject were recorded');
     assert.ok(measures.suggestionAcceptanceRate > 0);
+    // Seventh measure: first prompt to recovered context.
+    assert.ok(measures.itemsWithRecoveryTime > 0, 'recovery time should be measurable');
+    assert.equal(typeof measures.avgContextRecoveryMs, 'number');
+    assert.ok(measures.avgContextRecoveryMs >= 0, 'recovery time cannot be negative');
   });
 
   await check('serves a global analytics report', async () => {
