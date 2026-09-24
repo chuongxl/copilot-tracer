@@ -183,7 +183,9 @@ Design notes live in `docs/work-items-productivity-design.md`. Measured grouping
 quality and the decision not to add similarity scoring or AI enrichment are in
 `docs/work-items-evaluation.md`. Re-measure with `npm run eval:work-items`,
 which fails if precision drops below 95% or if any sensitive-looking value is
-read as a ticket.
+read as a ticket. `npm run demo:work-items` boots a seeded throwaway daemon for
+manual clicking; a browser walkthrough with screenshots is in
+`docs/screenshot/work-items/`.
 
 ### Workspace
 

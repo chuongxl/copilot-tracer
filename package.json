@@ -38,6 +38,7 @@
     "test:work-items": "npm run build && node scripts/test-work-item-extraction.mjs",
     "verify:work-items": "npm run build && node scripts/verify-work-items.mjs",
     "eval:work-items": "npm run build && node scripts/evaluate-work-item-grouping.mjs",
+    "demo:work-items": "npm run build && node scripts/demo-work-items.mjs",
     "publish:npm": "bash scripts/publish.sh"
   },
   "dependencies": {

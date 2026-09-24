@@ -337,6 +337,18 @@ function truncate(text, maxLength) {
         return text;
     return `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
+/**
+ * Drop the conversational lead-in people put in front of a requirement.
+ *
+ * "PAY-412 follow-up: the expired card should stay visible" carries the ticket
+ * key and a connector that mean nothing once the line sits under that ticket's
+ * work item. The requirement itself is what belongs in the criteria list.
+ */
+function stripLeadIn(criterion) {
+    const stripped = criterion.replace(/^(?:for\s+|re:?\s+|on\s+)?[A-Z][A-Z0-9]{1,9}-\d+\s*(?:follow[- ]?up|update|part\s*\d+)?\s*[:,-]\s*/i, '');
+    const out = stripped.trim() || criterion.trim();
+    return titleCaseFirst(out);
+}
 /** Normalize a criterion for duplicate detection: strip filler and punctuation. */
 function criterionKey(criterion) {
     return criterion
@@ -366,10 +378,14 @@ export function generateWorkItemDraft(prompts) {
     const objective = pickObjective(texts[0]);
     const criteria = [];
     const keys = [];
+    // The objective becomes the summary, so repeating it as a criterion is noise.
+    // It usually states an obligation, which is exactly why it would be picked up.
+    const objectiveKey = criterionKey(objective);
     for (const text of texts) {
-        for (const criterion of collectCriteria(text)) {
+        for (const rawCriterion of collectCriteria(text)) {
+            const criterion = stripLeadIn(rawCriterion);
             const key = criterionKey(criterion);
-            if (!key)
+            if (!key || key === objectiveKey)
                 continue;
             // The same requirement often reappears with a lead-in ("Remember, the API
             // should …"), so an exact-match set is not enough. If one normalized form

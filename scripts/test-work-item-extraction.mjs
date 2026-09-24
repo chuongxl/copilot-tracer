@@ -192,11 +192,35 @@ check('collects obligation sentences even without a heading', () => {
 
 check('deduplicates criteria repeated across prompts', () => {
   const draft = generateWorkItemDraft([
-    { prompt: 'The API should return 404 for unknown ids.' },
+    { prompt: 'Build the lookup endpoint.\nThe API should return 404 for unknown ids.' },
     { prompt: 'Remember the API should return 404 for unknown ids.' },
   ]);
   const matches = draft.acceptanceCriteria.filter((c) => /404 for unknown ids/i.test(c));
   assert.equal(matches.length, 1);
+});
+
+check('a lone requirement lives in the summary, not duplicated as a criterion', () => {
+  const draft = generateWorkItemDraft([{ prompt: 'The API should return 404 for unknown ids.' }]);
+  assert.match(draft.summary, /404 for unknown ids/i);
+  assert.deepEqual(draft.acceptanceCriteria, []);
+});
+
+check('does not repeat the objective as a criterion', () => {
+  const draft = generateWorkItemDraft([{
+    prompt: 'Implement PAY-412: the checkout page must show the saved card list before the total.\n\nAcceptance criteria:\n- Saved cards load before the total renders',
+  }]);
+  assert.deepEqual(draft.acceptanceCriteria, ['Saved cards load before the total renders']);
+});
+
+check('strips a ticket-key lead-in from a criterion', () => {
+  const draft = generateWorkItemDraft([
+    { prompt: 'Build the card list.' },
+    { prompt: 'PAY-412 follow-up: the expired card should still be visible.' },
+    { prompt: 'For ABC-9, the total must not jump.' },
+  ]);
+  assert.ok(draft.acceptanceCriteria.includes('The expired card should still be visible'));
+  assert.ok(draft.acceptanceCriteria.includes('The total must not jump'));
+  assert.ok(!draft.acceptanceCriteria.some((c) => /PAY-412|ABC-9/.test(c)), 'ticket key leaked into a criterion');
 });
 
 check('kind is a majority vote across prompts', () => {
