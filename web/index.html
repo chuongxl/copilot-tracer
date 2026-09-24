@@ -265,6 +265,14 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   .dash-total-value.sessions { color: #d2a8ff; }
 
   .dash-section-title { padding: 16px 24px 8px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .dash-toolbar { display: flex; align-items: flex-end; gap: 12px; padding: 0 24px 16px; flex-wrap: wrap; }
+  .dash-search-field { display: flex; flex-direction: column; gap: 6px; min-width: min(420px, 100%); }
+  .dash-search-field label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .dash-search-field input { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 8px 10px; font: inherit; }
+  .dash-search-field input:focus { border-color: #58a6ff; outline: 2px solid rgba(88,166,255,0.25); }
+  .dash-clear-btn { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; cursor: pointer; padding: 8px 10px; }
+  .dash-clear-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+  .dash-filter-status { color: #8b949e; font-size: 12px; padding-bottom: 8px; }
 
   .dash-projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 0 24px 24px; }
   .dash-project-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; cursor: pointer; transition: border-color 0.15s; }
@@ -276,7 +284,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   .dash-project-stat-value { font-size: 14px; font-weight: 600; color: #c9d1d9; margin-top: 2px; }
   .dash-project-stat-value.credits { color: #f0883e; }
   .dash-project-last-active { margin-top: 10px; font-size: 11px; color: #8b949e; }
-  .dash-empty { padding: 60px 24px; text-align: center; color: #8b949e; }
+  .dash-empty { grid-column: 1 / -1; padding: 60px 24px; text-align: center; color: #8b949e; }
   .dash-empty p { margin-top: 8px; font-size: 12px; }
   .dash-empty code { background: #21262d; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #79c0ff; }
   .dash-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 0 24px 24px; color: #8b949e; font-size: 12px; }
@@ -311,6 +319,14 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     </div>
     <div class="dash-totals" id="dash-totals"></div>
     <div class="dash-section-title">Projects</div>
+    <div class="dash-toolbar">
+      <div class="dash-search-field">
+        <label for="dashboard-search">Search projects</label>
+        <input id="dashboard-search" type="search" placeholder="Filter by project path, local path, or repo URL" autocomplete="off" oninput="handleDashboardSearch(this.value)"/>
+      </div>
+      <button id="dashboard-search-clear" class="dash-clear-btn" type="button" onclick="clearDashboardSearch()" hidden>Clear</button>
+      <div id="dash-filter-status" class="dash-filter-status" aria-live="polite"></div>
+    </div>
     <div id="dash-projects" class="dash-projects"></div>
     <div id="dash-pagination" class="dash-pagination"></div>
   </div>
@@ -390,6 +406,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   let liveSocket = null;
   let dashboardRefreshPending = false;
   let dashboardPage = 1;
+  let dashboardQuery = '';
   const dashboardPageSize = 12;
 
   // Main socket listens for all trace events — refreshes dashboard in real-time
@@ -407,6 +424,8 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     if (linkEl) linkEl.classList.add('active');
 
     if (page === 'dashboard') {
+      dashboardQuery = getHashDashboardQuery();
+      syncDashboardSearch();
       loadDashboard();
     } else if (page === 'live') {
       connectLiveSocket(projectId);
@@ -419,8 +438,16 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   }
 
   function getHashProject() {
-    const match = location.hash.match(/project=([^&]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
+    return getHashParams().get('project');
+  }
+
+  function getHashDashboardQuery() {
+    return getHashParams().get('q') ?? '';
+  }
+
+  function getHashParams() {
+    const queryStart = location.hash.indexOf('?');
+    return new URLSearchParams(queryStart === -1 ? '' : location.hash.slice(queryStart + 1));
   }
 
   function connectLiveSocket(projectId) {
@@ -471,7 +498,14 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
   async function loadDashboard() {
     try {
-      const res = await fetch(`/api/dashboard?page=${dashboardPage}&pageSize=${dashboardPageSize}`);
+      syncDashboardSearch();
+      const params = new URLSearchParams({
+        page: String(dashboardPage),
+        pageSize: String(dashboardPageSize),
+      });
+      const query = dashboardQuery.trim();
+      if (query) params.set('q', query);
+      const res = await fetch(`/api/dashboard?${params.toString()}`);
       if (!res.ok) throw new Error(`Dashboard request failed: ${res.status}`);
       const data = await res.json();
       dashboardPage = data.pagination.page;
@@ -479,6 +513,32 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     } catch (e) {
       console.error('Dashboard load failed:', e);
     }
+  }
+
+  function handleDashboardSearch(value) {
+    dashboardQuery = value;
+    dashboardPage = 1;
+    syncDashboardSearch();
+    writeDashboardQueryToHash();
+    loadDashboard();
+  }
+
+  function clearDashboardSearch() {
+    handleDashboardSearch('');
+  }
+
+  function syncDashboardSearch() {
+    const input = document.getElementById('dashboard-search');
+    if (input && input.value !== dashboardQuery) input.value = dashboardQuery;
+    const clearBtn = document.getElementById('dashboard-search-clear');
+    if (clearBtn) clearBtn.hidden = !dashboardQuery.trim();
+  }
+
+  function writeDashboardQueryToHash() {
+    if (getHashPage() !== 'dashboard') return;
+    const query = dashboardQuery.trim();
+    const hash = query ? `#/dashboard?q=${encodeURIComponent(query)}` : '#/dashboard';
+    if (location.hash !== hash) history.replaceState(null, '', hash);
   }
 
   function renderDashboard(data) {
@@ -504,8 +564,21 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
     const projectsEl = document.getElementById('dash-projects');
     const paginationEl = document.getElementById('dash-pagination');
+    const filterStatusEl = document.getElementById('dash-filter-status');
+    const query = dashboardQuery.trim();
+    if (filterStatusEl) {
+      const count = data.pagination.totalProjects;
+      filterStatusEl.textContent = query
+        ? `${count} matching project${count === 1 ? '' : 's'}`
+        : `${count} project${count === 1 ? '' : 's'}`;
+    }
     if (!data.projects.length) {
-      projectsEl.innerHTML = `
+      projectsEl.innerHTML = query ? `
+        <div class="dash-empty">
+          <div style="font-size:32px;margin-bottom:8px">🔎</div>
+          <div style="font-size:14px;color:#e6edf3;margin-bottom:4px">No projects match "${escHtml(query)}"</div>
+          <p>Try a different project path, local path, or repo URL.</p>
+        </div>` : `
         <div class="dash-empty">
           <div style="font-size:32px;margin-bottom:8px">📡</div>
           <div style="font-size:14px;color:#e6edf3;margin-bottom:4px">No projects traced yet</div>
