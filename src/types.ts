@@ -1,3 +1,7 @@
+import type { TicketReferenceType, WorkItemKind } from './workItemExtraction.js';
+
+export type { TicketReferenceType, WorkItemKind };
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -78,4 +82,88 @@ export interface DashboardData {
     totalPages: number;
     totalProjects: number;
   };
+}
+
+// ── Work items ────────────────────────────────────────────────────────────────
+
+export type WorkItemStatus = 'active' | 'done' | 'archived';
+export type WorkItemSource = 'detected' | 'manual';
+export type WorkItemSummarySource = 'generated' | 'user';
+export type WorkItemLinkSource = 'detected' | 'manual';
+
+export const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = ['active', 'done', 'archived'];
+
+export interface WorkItemReference {
+  type: TicketReferenceType;
+  key: string;
+  url: string | null;
+}
+
+export interface WorkItemTraceSummary {
+  id: string;
+  sessionId: string;
+  dateTime: string;
+  prompt: string;
+  tokens: number;
+  credits: number;
+  durationMs: number;
+  status: TraceEntry['status'];
+  linkSource: WorkItemLinkSource;
+}
+
+export interface WorkItem {
+  id: string;
+  projectId: string;
+  title: string;
+  summary: string | null;
+  kind: WorkItemKind;
+  status: WorkItemStatus;
+  source: WorkItemSource;
+  summarySource: WorkItemSummarySource;
+  confidence: number;
+  extractorVersion: string | null;
+  createdAt: string;
+  updatedAt: string;
+  references: WorkItemReference[];
+  ticketKey: string | null;
+  traceCount: number;
+  totalTokens: number;
+  totalCredits: number;
+  lastActiveAt: string | null;
+}
+
+export interface WorkItemDetail extends WorkItem {
+  traces: WorkItemTraceSummary[];
+}
+
+export interface CreateWorkItemInput {
+  projectId: string;
+  title: string;
+  summary?: string | null;
+  kind?: WorkItemKind;
+  status?: WorkItemStatus;
+  source?: WorkItemSource;
+  summarySource?: WorkItemSummarySource;
+  confidence?: number;
+  extractorVersion?: string | null;
+  references?: WorkItemReference[];
+}
+
+export interface UpdateWorkItemInput {
+  title?: string;
+  summary?: string | null;
+  kind?: WorkItemKind;
+  status?: WorkItemStatus;
+}
+
+export interface WorkItemTraceLinkInput {
+  workItemId: string;
+  traceId: string;
+  linkSource?: WorkItemLinkSource;
+  confidence?: number;
+}
+
+export interface WorkItemEvidenceResult {
+  status: 'linked' | 'uncategorized';
+  workItemIds: string[];
 }

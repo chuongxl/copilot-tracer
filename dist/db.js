@@ -50,6 +50,46 @@ db.exec(`
     FOREIGN KEY(session_id) REFERENCES sessions(id)
   );
 `);
+// Work items group traces by the piece of work they belong to. Kept in a
+// separate exec block so the original schema above stays easy to diff.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS work_items (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    kind TEXT NOT NULL DEFAULT 'unknown',
+    status TEXT NOT NULL DEFAULT 'active',
+    source TEXT NOT NULL DEFAULT 'detected',
+    summary_source TEXT NOT NULL DEFAULT 'generated',
+    confidence REAL NOT NULL DEFAULT 0,
+    extractor_version TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS work_item_traces (
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    trace_id TEXT NOT NULL REFERENCES traces(id),
+    linked_at TEXT NOT NULL,
+    link_source TEXT NOT NULL DEFAULT 'detected',
+    confidence REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (work_item_id, trace_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS work_item_references (
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL,
+    reference_key TEXT NOT NULL,
+    url TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (work_item_id, reference_type, reference_key)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_traces_trace ON work_item_traces(trace_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_refs_lookup ON work_item_references(reference_type, reference_key);
+`);
 // Migrate existing DBs
 try {
     db.prepare('ALTER TABLE projects ADD COLUMN repo_url TEXT').run();
@@ -63,6 +103,17 @@ try {
     db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run();
 }
 catch { }
+// Exposed so companion modules (work items) can query without opening a second
+// connection to the same file.
+export { db };
+export function getSessionProjectId(sessionId) {
+    const row = db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId);
+    return row?.project_id ?? null;
+}
+let tracePersistedListener = null;
+export function setTracePersistedListener(listener) {
+    tracePersistedListener = listener;
+}
 export function ensureProject(projectPath, repoUrl) {
     const id = 'project:' + projectPath;
     const now = new Date().toISOString();
@@ -205,6 +256,15 @@ export function upsertTrace(entry) {
         status: entry.status,
         error: entry.error ?? null,
     });
+    // Derived data must never break or slow ingestion, so failures are swallowed.
+    if (tracePersistedListener) {
+        try {
+            tracePersistedListener(entry);
+        }
+        catch (error) {
+            console.error('[work-items] trace listener failed:', error?.message ?? error);
+        }
+    }
 }
 export function getTraces(sessionId, limit = 100) {
     const rows = sessionId
