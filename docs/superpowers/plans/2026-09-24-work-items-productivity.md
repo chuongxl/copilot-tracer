@@ -12,12 +12,13 @@
 
 ## Progress
 
-Tasks 1 to 6 are implemented on `feature/work-items-productivity`. Extraction,
-persistence, the ingestion trigger, the management APIs, and the project
-workspace UI all ship with verification. Tasks 7 to 9 (deterministic summary
-drafts, git evidence, grouping evaluation) are still open.
+All nine tasks are implemented on `feature/work-items-productivity`.
+Extraction, persistence, the ingestion trigger, the management APIs, the project
+workspace UI, deterministic summary drafts, git evidence, and the grouping
+evaluation all ship with verification. 48 unit and persistence assertions, 29
+end-to-end assertions, and a 24-fixture grouping evaluation all pass.
 
-Three deliberate changes from the original task text:
+Deliberate changes from the original task text:
 
 **One listener instead of 20 call sites.** Task 4 called for adding
 `persistWorkItemEvidence` after every `upsertTrace`. There are more than twenty
@@ -44,6 +45,24 @@ saved under `artifacts/verify-work-items/run-workspace/`.
 The workspace also picked up two things the task list did not name: a status
 filter on the work-item list, and a `Group past traces` button that calls the
 backfill route, since a fresh install otherwise shows an empty page.
+
+**A blank field is always fillable.** Task 7 protects user edits from
+regeneration by checking `summary_source`. Manual work items are created with
+`summary_source = 'user'` and nothing in the summary, so the check alone made
+drafts a no-op for exactly the items that need them most. Regeneration now also
+fills any field that is empty, whatever its source says.
+
+**Confirmation is enforced server-side.** Task 8 asked for manual confirmation
+before completion. A browser-only confirm dialog is not a rule, it is a
+suggestion. `PATCH /api/work-items/:id` now returns 409 for a move to `done`
+unless the request carries `confirmCompletion: true`, and the UI asks first.
+
+**No similarity scoring or AI enrichment.** Task 9 step 4 makes this conditional
+on the baseline showing a gap. It does not: deterministic extraction scores 100%
+precision and recall on every fixture carrying a reference. The reasoning is
+recorded in `docs/work-items-evaluation.md`. The evaluation did earn its keep
+though: it caught `AKIA-1234` being read as a Jira ticket, which would have
+turned a leaked AWS key prefix into a work item title.
 
 Tabs are Work items and Inbox only. Overview, Sessions, and Traces tabs from the
 original task text would duplicate the dashboard and live tracer, which already
@@ -451,19 +470,19 @@ git commit -m "feat: add project work item workspace"
 - `POST /api/work-items/:id/draft`.
 - `PATCH /api/work-items/:id` accepts manually edited summary and acceptance criteria.
 
-- [ ] **Step 1: Write draft-generation assertions**
+- [x] **Step 1: Write draft-generation assertions**
 
 Given prompts containing an objective and explicit criteria, assert the draft title, summary, and criteria are deterministic and marked as generated.
 
-- [ ] **Step 2: Implement local draft generation**
+- [x] **Step 2: Implement local draft generation**
 
 Use prompt structure and deterministic sentence extraction first. Do not add a hosted model. Store `source = 'prompt'` and a generator version.
 
-- [ ] **Step 3: Add editable UI**
+- [x] **Step 3: Add editable UI**
 
 Render generated fields with an `AI-generated` or `Generated from prompts` label and editable controls. Preserve manual edits on subsequent extraction runs.
 
-- [ ] **Step 4: Run verification**
+- [x] **Step 4: Run verification**
 
 Run:
 
@@ -474,7 +493,7 @@ node scripts/verify-work-items.mjs --browser
 
 Expected: generated drafts appear, manual edits persist, and raw prompts remain unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/workItemExtraction.ts src/workItemService.ts src/webServer.ts web/index.html scripts/verify-work-items.mjs
@@ -495,19 +514,19 @@ git commit -m "feat: add editable work item summaries"
 - `collectGitEvidence(projectPath: string): GitEvidence`.
 - `POST /api/work-items/:id/refresh-evidence`.
 
-- [ ] **Step 1: Write evidence assertions**
+- [x] **Step 1: Write evidence assertions**
 
 Verify that a local commit, branch, or PR reference is shown as evidence and never automatically marks a work item completed without the configured completion rule.
 
-- [ ] **Step 2: Implement local Git evidence**
+- [x] **Step 2: Implement local Git evidence**
 
 Read branch name, recent commits, and configured remote URL with bounded commands. Treat command failures as explicit evidence errors.
 
-- [ ] **Step 3: Add completion controls**
+- [x] **Step 3: Add completion controls**
 
 Show evidence on the work-item detail page. Require manual confirmation before changing status to `completed`.
 
-- [ ] **Step 4: Run verification**
+- [x] **Step 4: Run verification**
 
 Run:
 
@@ -518,7 +537,7 @@ node scripts/verify-work-items.mjs --browser
 
 Expected: evidence appears and status changes only through explicit confirmation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/workItemGitEvidence.ts src/workItemService.ts src/webServer.ts web/index.html README.md scripts/verify-work-items.mjs
@@ -535,7 +554,7 @@ git commit -m "feat: add git evidence to work items"
 **Interfaces:**
 - The evaluator consumes a fixed prompt fixture set and reports precision, recall, auto-link acceptance, correction rate, and unlinked rate.
 
-- [ ] **Step 1: Build a fixture set**
+- [x] **Step 1: Build a fixture set**
 
 Include at least:
 
@@ -547,11 +566,11 @@ Include at least:
 6. Unrelated prompts sharing broad nouns.
 7. Prompts containing sensitive-looking values that must remain local.
 
-- [ ] **Step 2: Implement the evaluator**
+- [x] **Step 2: Implement the evaluator**
 
 Emit JSON and a human-readable table. Fail if deterministic extraction precision is below the threshold recorded in `docs/work-items-evaluation.md`.
 
-- [ ] **Step 3: Record baseline results**
+- [x] **Step 3: Record baseline results**
 
 Run:
 
@@ -561,11 +580,11 @@ node scripts/evaluate-work-item-grouping.mjs
 
 Expected: a versioned baseline that states where automatic grouping is safe and where suggestions are required.
 
-- [ ] **Step 4: Decide whether similarity or AI enrichment earns its place**
+- [x] **Step 4: Decide whether similarity or AI enrichment earns its place**
 
 Add no enrichment implementation unless the baseline shows a measurable gap that the proposed technique can address without violating the privacy constraints.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/evaluate-work-item-grouping.mjs docs/work-items-evaluation.md README.md
@@ -576,16 +595,16 @@ git commit -m "test: measure work item grouping quality"
 
 Before opening each pull request:
 
-- [ ] Dedicated feature branch is used.
-- [ ] `npx tsc --noEmit` passes.
-- [ ] `git diff --check` passes.
-- [ ] Isolated verifier passes.
-- [ ] Existing dashboard and live-tracer routes still load.
-- [ ] Raw trace payloads remain unchanged.
-- [ ] Duplicate extraction is idempotent.
-- [ ] Invalid API input returns explicit errors.
-- [ ] Browser evidence includes the user action and resulting state.
-- [ ] No generated artifacts or local databases are committed.
+- [x] Dedicated feature branch is used. `feature/work-items-productivity`.
+- [x] `npx tsc --noEmit` passes.
+- [x] `git diff --check` passes.
+- [x] Isolated verifier passes. 48 unit, 29 end-to-end, 24 evaluation fixtures.
+- [x] Existing dashboard and live-tracer routes still load. `/index.html`, `/api/dashboard` and `/api/traces` all return 200 from a fresh daemon.
+- [x] Raw trace payloads remain unchanged. Work items live in three new tables and link by trace id.
+- [x] Duplicate extraction is idempotent. Asserted in both scripts.
+- [x] Invalid API input returns explicit errors. 400 for bad kind, status, title and criteria; 404 for unknown ids; 409 for unconfirmed completion.
+- [x] Browser evidence includes the user action and resulting state. Screenshots under `artifacts/verify-work-items/run-workspace/`, not committed.
+- [x] No generated artifacts or local databases are committed. `artifacts/` is git-ignored and every script uses a temp `COPILOT_TRACER_HOME`.
 
 ## First recommended slice
 

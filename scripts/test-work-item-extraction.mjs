@@ -81,8 +81,13 @@ check('ignores standards and encodings that look like ticket keys', () => {
   assert.deepEqual(extractWorkItemEvidence(noise).references, []);
 });
 
-check('does not read a ticket key out of a URL path segment', () => {
-  const { references } = extractWorkItemEvidence('Check https://example.com/docs/AB-12/readme');
+check('never treats a credential prefix as a ticket key', () => {
+  const prompt = 'My key is AKIA-1234 and the token is GHP-9999. Fix ABC-777.';
+  const keys = extractWorkItemEvidence(prompt).references.map((r) => r.key);
+  assert.deepEqual(keys, ['ABC-777']);
+});
+
+check('does not read a ticket key out of a URL path segment', () => {  const { references } = extractWorkItemEvidence('Check https://example.com/docs/AB-12/readme');
   assert.deepEqual(references, []);
 });
 

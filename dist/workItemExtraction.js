@@ -18,6 +18,11 @@ const JIRA_PREFIX_DENYLIST = new Set([
     'WCAG', 'SOC', 'PCI', 'DSS', 'FIPS', 'NIST', 'OWASP', 'GDPR', 'HIPAA',
     'COVID', 'ARM', 'AMD', 'INT', 'UINT', 'FLOAT', 'RGB', 'RGBA', 'HSL', 'CMYK',
     'USD', 'EUR', 'GBP', 'JDK', 'JRE', 'NODE', 'PY', 'IE', 'MS',
+    // Credential prefixes. A leaked key fragment must never become a work item
+    // title, and none of these are plausible Jira project keys.
+    'AKIA', 'ASIA', 'ABIA', 'ACCA', 'AGPA', 'AIDA', 'ANPA', 'ANVA', 'APKA', 'AROA', 'ASCA',
+    'GHP', 'GHO', 'GHU', 'GHS', 'GHR', 'XOXB', 'XOXP', 'XOXA', 'XOXS', 'SK', 'PK', 'BEARER',
+    'TOKEN', 'SECRET', 'APIKEY', 'PASSWORD', 'PWD', 'PRIVATE',
 ]);
 function maskSpan(chars, start, end) {
     for (let i = start; i < end && i < chars.length; i++)

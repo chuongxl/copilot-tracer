@@ -179,7 +179,11 @@ Existing history is not grouped automatically. Run the backfill once:
 curl -X POST "http://localhost:4747/api/projects/$(node -e 'console.log(encodeURIComponent(process.argv[1]))' 'project:/path/to/repo')/work-items/backfill"
 ```
 
-Design notes live in `docs/work-items-productivity-design.md`.
+Design notes live in `docs/work-items-productivity-design.md`. Measured grouping
+quality and the decision not to add similarity scoring or AI enrichment are in
+`docs/work-items-evaluation.md`. Re-measure with `npm run eval:work-items`,
+which fails if precision drops below 95% or if any sensitive-looking value is
+read as a ticket.
 
 ### Workspace
 
