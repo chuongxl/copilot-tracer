@@ -264,6 +264,23 @@ async function main() {
     assert.equal(res.body.traceCount, 0);
   });
 
+  console.log('workspace ui');
+
+  await check('serves the project workspace page and its controls', async () => {
+    const res = await fetch(`${base}/index.html`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    for (const id of [
+      'page-project', 'ws-title', 'ws-tab-work-items', 'ws-tab-inbox',
+      'ws-panel-work-items', 'ws-panel-inbox', 'wi-status-filter',
+      'wi-list', 'inbox-list', 'wi-modal', 'ws-backfill-btn',
+    ]) {
+      assert.ok(html.includes(`id="${id}"`), `missing element #${id}`);
+    }
+    assert.ok(html.includes("location.hash='#/project?project="), 'project card does not open the workspace');
+    assert.ok(html.includes("'project'"), 'project route is not registered');
+  });
+
   console.log('validation');
 
   await check('rejects an unknown project with 404', async () => {

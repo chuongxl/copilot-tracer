@@ -178,6 +178,22 @@ curl -X POST "http://localhost:4747/api/projects/$(node -e 'console.log(encodeUR
 
 Design notes live in `docs/work-items-productivity-design.md`.
 
+### Workspace
+
+Click a project card on the dashboard to open its workspace at
+`#/project?project=<id>`.
+
+**Work items tab.** One card per work item with its ticket reference, kind,
+status, linked prompt count, tokens, and cost. Filter by status. Click a card to
+edit the title, summary, kind, and status, or to unlink a prompt. Editing a
+generated summary marks it as yours, so it will not be overwritten later.
+
+**Inbox tab.** Prompts in the project that no work item has claimed. Attach one
+to an existing item or spin up a new item from it.
+
+**Group past traces.** Runs the backfill over existing history. Needed once
+after upgrading, since extraction only fires on newly captured traces.
+
 ---
 
 ## Live Tracer

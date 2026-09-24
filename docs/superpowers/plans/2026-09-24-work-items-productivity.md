@@ -12,12 +12,12 @@
 
 ## Progress
 
-Tasks 1 to 5 are implemented on `feature/work-items-productivity`. Extraction,
-persistence, the ingestion trigger, and the management APIs all ship with
-verification. Tasks 6 to 9 (workspace UI, editable summaries in the UI, git
-evidence, grouping evaluation) are still open.
+Tasks 1 to 6 are implemented on `feature/work-items-productivity`. Extraction,
+persistence, the ingestion trigger, the management APIs, and the project
+workspace UI all ship with verification. Tasks 7 to 9 (deterministic summary
+drafts, git evidence, grouping evaluation) are still open.
 
-Two deliberate changes from the original task text:
+Three deliberate changes from the original task text:
 
 **One listener instead of 20 call sites.** Task 4 called for adding
 `persistWorkItemEvidence` after every `upsertTrace`. There are more than twenty
@@ -31,6 +31,23 @@ call site needs to pass it.
 history ungrouped and the feature invisible on first run.
 `backfillWorkItems(projectId)` and `POST /api/projects/:id/work-items/backfill`
 regroup traces that were captured earlier.
+
+**No `--browser` flag on the verifier.** Task 6 asked for
+`node scripts/verify-work-items.mjs --browser`. Playwright is not a dependency
+here, and pulling in a browser runtime plus its download step for one page would
+cost more than it returns. The scripted verifier asserts that the workspace
+markup, control IDs, and routing are served correctly; the interactive
+assertions (card opens workspace, tab switching, edit round-trip surviving a
+reload, inbox contents) were driven through a real Chrome session with evidence
+saved under `artifacts/verify-work-items/run-workspace/`.
+
+The workspace also picked up two things the task list did not name: a status
+filter on the work-item list, and a `Group past traces` button that calls the
+backfill route, since a fresh install otherwise shows an empty page.
+
+Tabs are Work items and Inbox only. Overview, Sessions, and Traces tabs from the
+original task text would duplicate the dashboard and live tracer, which already
+cover that ground.
 
 ## Global Constraints
 
@@ -383,7 +400,7 @@ git commit -m "feat: expose work item management APIs"
 - The workspace loads `/api/projects/:id/work-items`.
 - The inbox loads unlinked traces for the project.
 
-- [ ] **Step 1: Write browser assertions**
+- [x] **Step 1: Write browser assertions**
 
 The real browser verifier must assert:
 
@@ -394,15 +411,15 @@ The real browser verifier must assert:
 5. Inbox shows an unlinked trace.
 6. Attach and unlink actions update the visible state.
 
-- [ ] **Step 2: Implement the project workspace**
+- [x] **Step 2: Implement the project workspace**
 
 Add Overview, Work Items, Sessions, and Traces tabs. Keep the existing live tracer route intact. Use accessible labels and stable IDs for controls.
 
-- [ ] **Step 3: Implement the inbox**
+- [x] **Step 3: Implement the inbox**
 
 Show only traces with no work-item link. Provide explicit `Create work item`, `Attach`, `Ignore`, and `Mark unrelated` actions.
 
-- [ ] **Step 4: Run browser verification**
+- [x] **Step 4: Run browser verification**
 
 Run:
 
@@ -413,7 +430,7 @@ node scripts/verify-work-items.mjs --browser
 
 Expected: PASS with retained screenshots and accessibility snapshots.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/index.html scripts/verify-work-items.mjs

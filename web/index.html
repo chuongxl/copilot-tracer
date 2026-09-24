@@ -283,6 +283,74 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   .dash-pagination button { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; cursor: pointer; padding: 6px 10px; }
   .dash-pagination button:hover:not(:disabled) { border-color: #58a6ff; color: #58a6ff; }
   .dash-pagination button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  /* ── Project workspace ── */
+  .ws-header { padding: 20px 24px 12px; border-bottom: 1px solid #21262d; }
+  .ws-header h2 { font-size: 18px; color: #e6edf3; }
+  .ws-header p { margin-top: 4px; font-size: 12px; color: #8b949e; word-break: break-all; }
+  .ws-back { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 12px; padding: 0 0 8px; }
+  .ws-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .ws-btn { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; cursor: pointer; font-size: 12px; padding: 6px 12px; }
+  .ws-btn:hover:not(:disabled) { border-color: #58a6ff; color: #58a6ff; }
+  .ws-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+  .ws-btn.danger:hover:not(:disabled) { border-color: #f85149; color: #f85149; }
+
+  .ws-tabs { display: flex; gap: 4px; padding: 12px 24px 0; border-bottom: 1px solid #21262d; }
+  .ws-tab { background: none; border: none; border-bottom: 2px solid transparent; color: #8b949e; cursor: pointer; font-size: 13px; padding: 8px 14px; }
+  .ws-tab:hover { color: #c9d1d9; }
+  .ws-tab.active { border-bottom-color: #58a6ff; color: #58a6ff; }
+  .ws-panel { display: none; padding: 16px 24px 32px; }
+  .ws-panel.active { display: block; }
+
+  .ws-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .ws-toolbar label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .ws-toolbar select, .ws-toolbar input { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 12px; padding: 6px 8px; }
+  .ws-toolbar select:focus, .ws-toolbar input:focus { border-color: #58a6ff; outline: none; }
+  .ws-status { color: #8b949e; font-size: 12px; margin-left: auto; }
+
+  .wi-list { display: flex; flex-direction: column; gap: 10px; }
+  .wi-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; cursor: pointer; padding: 14px 16px; transition: border-color 0.15s; }
+  .wi-card:hover { border-color: #58a6ff; }
+  .wi-card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .wi-title { color: #e6edf3; font-size: 14px; font-weight: 600; }
+  .wi-summary { color: #8b949e; font-size: 12px; margin-top: 6px; line-height: 1.5; }
+  .wi-meta { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+  .wi-meta-item { display: flex; flex-direction: column; }
+  .wi-meta-label { font-size: 9px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .wi-meta-value { font-size: 13px; font-weight: 600; color: #c9d1d9; margin-top: 2px; }
+  .wi-meta-value.tokens { color: #79c0ff; }
+  .wi-meta-value.credits { color: #f0883e; }
+
+  .tag { border-radius: 999px; font-size: 10px; font-weight: 600; padding: 2px 8px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .tag-kind { background: #1f6feb33; color: #79c0ff; }
+  .tag-status { background: #23863633; color: #56d364; }
+  .tag-status.done { background: #8957e533; color: #d2a8ff; }
+  .tag-status.archived { background: #6e768166; color: #8b949e; }
+  .tag-source { background: #6e768133; color: #8b949e; }
+  .tag-ref { background: #f0883e26; color: #f0883e; font-family: ui-monospace, monospace; text-transform: none; }
+
+  .inbox-row { align-items: center; background: #161b22; border: 1px solid #30363d; border-radius: 8px; display: flex; gap: 12px; padding: 12px 14px; }
+  .inbox-prompt { color: #c9d1d9; flex: 1; font-size: 12px; line-height: 1.5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-time { color: #8b949e; font-size: 11px; white-space: nowrap; }
+  .inbox-actions { display: flex; gap: 6px; }
+
+  .ws-empty { color: #8b949e; padding: 48px 0; text-align: center; font-size: 13px; }
+  .ws-error { background: #f8514926; border: 1px solid #f8514966; border-radius: 6px; color: #ff7b72; font-size: 12px; margin-bottom: 12px; padding: 10px 12px; }
+
+  .wi-detail-field { margin-bottom: 14px; }
+  .wi-detail-field label { color: #8b949e; display: block; font-size: 10px; letter-spacing: 0.5px; margin-bottom: 5px; text-transform: uppercase; }
+  .wi-detail-field input, .wi-detail-field textarea, .wi-detail-field select {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9;
+    font-family: inherit; font-size: 13px; padding: 8px 10px; width: 100%;
+  }
+  .wi-detail-field textarea { min-height: 70px; resize: vertical; }
+  .wi-detail-field input:focus, .wi-detail-field textarea:focus, .wi-detail-field select:focus { border-color: #58a6ff; outline: none; }
+  .wi-detail-row { display: flex; gap: 12px; }
+  .wi-detail-row > * { flex: 1; }
+  .wi-generated-note { color: #8b949e; font-size: 10px; font-style: italic; margin-top: 4px; }
+  .wi-trace-row { border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+  .wi-trace-row:last-child { border-bottom: none; }
+  .wi-trace-prompt { color: #c9d1d9; flex: 1; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -297,6 +365,10 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   <a href="#/live" class="sidebar-link" data-page="live" title="Live Tracer">
     <span class="sidebar-icon">📡</span>
     <span class="sidebar-label">Live</span>
+  </a>
+  <a href="#/project" class="sidebar-link" data-page="project" title="Work Items" id="sidebar-project-link">
+    <span class="sidebar-icon">🗂️</span>
+    <span class="sidebar-label">Work</span>
   </a>
 </nav>
 
@@ -313,6 +385,47 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     <div class="dash-section-title">Projects</div>
     <div id="dash-projects" class="dash-projects"></div>
     <div id="dash-pagination" class="dash-pagination"></div>
+  </div>
+
+  <!-- ═══════════════ PROJECT WORKSPACE PAGE ═══════════════ -->
+  <div id="page-project" class="page">
+    <div class="ws-header">
+      <button type="button" class="ws-back" onclick="location.hash='#/dashboard'">← Back to dashboard</button>
+      <h2 id="ws-title">Project</h2>
+      <p id="ws-subtitle"></p>
+      <div class="ws-actions">
+        <button type="button" class="ws-btn" id="ws-live-btn" onclick="openLiveForCurrentProject()">Open live tracer</button>
+        <button type="button" class="ws-btn" id="ws-backfill-btn" onclick="runBackfill()">Group past traces</button>
+        <button type="button" class="ws-btn" id="ws-new-btn" onclick="startNewWorkItem()">New work item</button>
+      </div>
+    </div>
+
+    <div class="ws-tabs" role="tablist">
+      <button type="button" class="ws-tab active" id="ws-tab-work-items" role="tab" onclick="showWorkspaceTab('work-items')">Work items</button>
+      <button type="button" class="ws-tab" id="ws-tab-inbox" role="tab" onclick="showWorkspaceTab('inbox')">Inbox</button>
+    </div>
+
+    <div class="ws-panel active" id="ws-panel-work-items" role="tabpanel" aria-labelledby="ws-tab-work-items">
+      <div class="ws-toolbar">
+        <label for="wi-status-filter">Status</label>
+        <select id="wi-status-filter" onchange="loadWorkItems()">
+          <option value="">All</option>
+          <option value="active" selected>Active</option>
+          <option value="done">Done</option>
+          <option value="archived">Archived</option>
+        </select>
+        <span class="ws-status" id="wi-count-status"></span>
+      </div>
+      <div id="wi-error"></div>
+      <div class="wi-list" id="wi-list"></div>
+    </div>
+
+    <div class="ws-panel" id="ws-panel-inbox" role="tabpanel" aria-labelledby="ws-tab-inbox">
+      <div class="ws-toolbar">
+        <span class="ws-status" id="inbox-count-status"></span>
+      </div>
+      <div class="wi-list" id="inbox-list"></div>
+    </div>
   </div>
 
   <!-- ═══════════════ LIVE TRACER PAGE ═══════════════ -->
@@ -379,9 +492,18 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   </div>
 </div>
 
+<!-- Work item detail modal -->
+<div class="modal-overlay" id="wi-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeWorkItemModal()">×</button>
+    <h3 id="wi-modal-title">Work Item</h3>
+    <div id="wi-modal-body"></div>
+  </div>
+</div>
+
 <script>
   // ── Routing ────────────────────────────────────
-  const pages = ['dashboard', 'live'];
+  const pages = ['dashboard', 'live', 'project'];
   const socket = io();
   let traces = {};
   let summary = null;
@@ -410,6 +532,8 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       loadDashboard();
     } else if (page === 'live') {
       connectLiveSocket(projectId);
+    } else if (page === 'project') {
+      openWorkspace(projectId);
     }
   }
 
@@ -523,7 +647,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       const lastActive = p.lastActiveAt ? fmtDateTime(p.lastActiveAt) : '—';
       const repoBadge = p.repoUrl ? `<div style="margin-top:6px;font-size:10px;color:#58a6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(p.repoUrl)}">${escHtml(p.repoUrl.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, ''))}</div>` : '';
       return `
-        <div class="dash-project-card" onclick="location.hash='#/live?project=${encodeURIComponent(p.id)}'">
+        <div class="dash-project-card" onclick="location.hash='#/project?project=${encodeURIComponent(p.id)}'">
           <div class="dash-project-path" title="${escHtml(p.localPath || p.repoUrl || p.path)}">${escHtml(shortPath)}</div>
           ${repoBadge}
           <div class="dash-project-stats">
@@ -556,6 +680,387 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     dashboardPage += direction;
     loadDashboard();
   }
+
+  // ── Project workspace ──────────────────────────
+  let workspaceProjectId = null;
+  let workspaceProject = null;
+  let workspaceTab = 'work-items';
+
+  const WORK_ITEM_KINDS = ['feature', 'bug', 'task', 'refactor', 'investigation', 'documentation', 'operations', 'unknown'];
+  const WORK_ITEM_STATUSES = ['active', 'done', 'archived'];
+
+  async function api(method, url, body) {
+    const res = await fetch(url, {
+      method,
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error((data && data.error) || `Request failed: ${res.status}`);
+    return data;
+  }
+
+  function showWorkspaceError(message) {
+    const el = document.getElementById('wi-error');
+    el.innerHTML = message ? `<div class="ws-error" role="alert">${escHtml(message)}</div>` : '';
+  }
+
+  async function openWorkspace(projectId) {
+    workspaceProjectId = projectId || workspaceProjectId;
+    const titleEl = document.getElementById('ws-title');
+    const subtitleEl = document.getElementById('ws-subtitle');
+
+    if (!workspaceProjectId) {
+      titleEl.textContent = 'No project selected';
+      subtitleEl.textContent = 'Pick a project from the dashboard to see its work items.';
+      document.getElementById('wi-list').innerHTML = '<div class="ws-empty">Open a project from the dashboard first.</div>';
+      document.getElementById('inbox-list').innerHTML = '';
+      return;
+    }
+
+    // Reflect the selection in the URL so the view survives a reload.
+    const wanted = `#/project?project=${encodeURIComponent(workspaceProjectId)}`;
+    if (location.hash !== wanted) history.replaceState(null, '', wanted);
+
+    titleEl.textContent = workspaceProjectId.replace(/^project:/, '');
+    subtitleEl.textContent = 'Loading project…';
+
+    try {
+      const dashboard = await api('GET', '/api/dashboard?pageSize=100');
+      workspaceProject = dashboard.projects.find(p => p.id === workspaceProjectId) || null;
+      if (workspaceProject) {
+        const label = workspaceProject.localPath || workspaceProject.repoUrl || workspaceProject.path;
+        titleEl.textContent = label.replace(/^\/Users\/[^/]+/, '~').replace(/^https?:\/\/github\.com\//, 'gh:');
+        subtitleEl.textContent = `${workspaceProject.sessionCount} sessions · ${workspaceProject.totalTokens.toLocaleString()} tokens · ${fmtCredits(workspaceProject.totalCredits)}`;
+      } else {
+        subtitleEl.textContent = workspaceProjectId.replace(/^project:/, '');
+      }
+    } catch (e) {
+      subtitleEl.textContent = workspaceProjectId.replace(/^project:/, '');
+    }
+
+    showWorkspaceTab(workspaceTab);
+  }
+
+  function showWorkspaceTab(tab) {
+    workspaceTab = tab;
+    document.querySelectorAll('.ws-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.ws-panel').forEach(p => p.classList.remove('active'));
+    const tabEl = document.getElementById('ws-tab-' + tab);
+    const panelEl = document.getElementById('ws-panel-' + tab);
+    if (tabEl) tabEl.classList.add('active');
+    if (panelEl) panelEl.classList.add('active');
+
+    if (tab === 'work-items') loadWorkItems();
+    else loadInbox();
+  }
+
+  function openLiveForCurrentProject() {
+    if (workspaceProjectId) location.hash = `#/live?project=${encodeURIComponent(workspaceProjectId)}`;
+  }
+
+  async function loadWorkItems() {
+    if (!workspaceProjectId) return;
+    const listEl = document.getElementById('wi-list');
+    const statusEl = document.getElementById('wi-count-status');
+    const status = document.getElementById('wi-status-filter').value;
+    const url = `/api/projects/${encodeURIComponent(workspaceProjectId)}/work-items${status ? `?status=${status}` : ''}`;
+
+    listEl.innerHTML = '<div class="ws-empty">Loading…</div>';
+    try {
+      const items = await api('GET', url);
+      showWorkspaceError('');
+      statusEl.textContent = `${items.length} work item${items.length === 1 ? '' : 's'}`;
+
+      if (!items.length) {
+        listEl.innerHTML = `
+          <div class="ws-empty" id="wi-empty">
+            <div style="font-size:28px;margin-bottom:8px">🗂️</div>
+            <div>No work items yet</div>
+            <p style="margin-top:8px;font-size:12px">Mention a ticket like <code>ABC-123</code> in a prompt, or use <strong>Group past traces</strong> to scan existing history.</p>
+          </div>`;
+        return;
+      }
+
+      listEl.innerHTML = items.map(renderWorkItemCard).join('');
+    } catch (e) {
+      listEl.innerHTML = '';
+      statusEl.textContent = '';
+      showWorkspaceError(e.message);
+    }
+  }
+
+  function renderWorkItemCard(item) {
+    const refs = item.references.map(r => `<span class="tag tag-ref">${escHtml(r.key)}</span>`).join(' ');
+    return `
+      <div class="wi-card" data-work-item="${escHtml(item.id)}" onclick="openWorkItem('${escHtml(item.id)}')">
+        <div class="wi-card-top">
+          <span class="wi-title">${escHtml(item.title)}</span>
+          <span class="tag tag-kind">${escHtml(item.kind)}</span>
+          <span class="tag tag-status ${escHtml(item.status)}">${escHtml(item.status)}</span>
+          <span class="tag tag-source">${escHtml(item.source)}</span>
+          ${refs}
+        </div>
+        ${item.summary ? `<div class="wi-summary">${escHtml(truncate(item.summary, 200))}</div>` : ''}
+        <div class="wi-meta">
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Prompts</span>
+            <span class="wi-meta-value">${item.traceCount}</span>
+          </div>
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Tokens</span>
+            <span class="wi-meta-value tokens">${item.totalTokens.toLocaleString()}</span>
+          </div>
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Est Cost</span>
+            <span class="wi-meta-value credits">${fmtCredits(item.totalCredits)}</span>
+          </div>
+          <div class="wi-meta-item">
+            <span class="wi-meta-label">Last active</span>
+            <span class="wi-meta-value">${item.lastActiveAt ? fmtDateTime(item.lastActiveAt) : '—'}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  async function runBackfill() {
+    if (!workspaceProjectId) return;
+    const btn = document.getElementById('ws-backfill-btn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Grouping…';
+    try {
+      const result = await api('POST', `/api/projects/${encodeURIComponent(workspaceProjectId)}/work-items/backfill`);
+      btn.textContent = `Scanned ${result.scanned}, grouped ${result.linked}`;
+      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+      showWorkspaceTab(workspaceTab);
+    } catch (e) {
+      btn.textContent = original;
+      btn.disabled = false;
+      showWorkspaceError(e.message);
+    }
+  }
+
+  async function startNewWorkItem() {
+    if (!workspaceProjectId) return;
+    const title = prompt('Work item title');
+    if (!title || !title.trim()) return;
+    try {
+      await api('POST', '/api/work-items', { projectId: workspaceProjectId, title: title.trim() });
+      showWorkspaceTab('work-items');
+    } catch (e) {
+      showWorkspaceError(e.message);
+    }
+  }
+
+  // ── Inbox ──────────────────────────────────────
+  async function loadInbox() {
+    if (!workspaceProjectId) return;
+    const listEl = document.getElementById('inbox-list');
+    const statusEl = document.getElementById('inbox-count-status');
+    listEl.innerHTML = '<div class="ws-empty">Loading…</div>';
+
+    try {
+      const traces = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/uncategorized-traces?limit=100`);
+      statusEl.textContent = `${traces.length} ungrouped prompt${traces.length === 1 ? '' : 's'}`;
+
+      if (!traces.length) {
+        listEl.innerHTML = '<div class="ws-empty" id="inbox-empty">Every prompt in this project belongs to a work item.</div>';
+        return;
+      }
+
+      listEl.innerHTML = traces.map(t => `
+        <div class="inbox-row" data-trace="${escHtml(t.id)}">
+          <span class="inbox-prompt" title="${escHtml(t.prompt)}">${escHtml(truncate(t.prompt.replace(/\s+/g, ' '), 140))}</span>
+          <span class="inbox-time">${fmtDateTime(t.dateTime)}</span>
+          <div class="inbox-actions">
+            <button type="button" class="ws-btn" onclick="attachTrace('${escHtml(t.id)}')">Attach</button>
+            <button type="button" class="ws-btn" onclick="createWorkItemFromTrace('${escHtml(t.id)}')">New item</button>
+          </div>
+        </div>`).join('');
+    } catch (e) {
+      listEl.innerHTML = '';
+      statusEl.textContent = '';
+      showWorkspaceError(e.message);
+    }
+  }
+
+  async function attachTrace(traceId) {
+    try {
+      const items = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/work-items`);
+      if (!items.length) {
+        alert('No work items yet. Use "New item" to create one from this prompt.');
+        return;
+      }
+      const choice = prompt(
+        'Attach to which work item?\n\n' + items.map((it, i) => `${i + 1}. ${it.title}`).join('\n'),
+        '1',
+      );
+      if (choice === null) return;
+      const index = Number(choice) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+        showWorkspaceError('That is not one of the listed work items.');
+        return;
+      }
+      await api('POST', `/api/work-items/${encodeURIComponent(items[index].id)}/traces`, { traceId });
+      loadInbox();
+    } catch (e) {
+      showWorkspaceError(e.message);
+    }
+  }
+
+  async function createWorkItemFromTrace(traceId) {
+    const title = prompt('Title for the new work item');
+    if (!title || !title.trim()) return;
+    try {
+      const created = await api('POST', '/api/work-items', { projectId: workspaceProjectId, title: title.trim() });
+      await api('POST', `/api/work-items/${encodeURIComponent(created.id)}/traces`, { traceId });
+      loadInbox();
+    } catch (e) {
+      showWorkspaceError(e.message);
+    }
+  }
+
+  // ── Work item detail ───────────────────────────
+  let openWorkItemId = null;
+
+  async function openWorkItem(id) {
+    openWorkItemId = id;
+    const modal = document.getElementById('wi-modal');
+    const body = document.getElementById('wi-modal-body');
+    document.getElementById('wi-modal-title').textContent = 'Work Item';
+    body.innerHTML = '<div class="ws-empty">Loading…</div>';
+    modal.classList.add('open');
+
+    try {
+      const item = await api('GET', `/api/work-items/${encodeURIComponent(id)}`);
+      renderWorkItemDetail(item);
+    } catch (e) {
+      body.innerHTML = `<div class="ws-error" role="alert">${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderWorkItemDetail(item) {
+    document.getElementById('wi-modal-title').textContent = item.title;
+
+    const refs = item.references.length
+      ? item.references.map(r => r.url
+          ? `<a href="${escHtml(r.url)}" target="_blank" rel="noopener" class="tag tag-ref">${escHtml(r.key)}</a>`
+          : `<span class="tag tag-ref">${escHtml(r.key)}</span>`).join(' ')
+      : '<span style="color:#8b949e;font-size:12px">No ticket reference</span>';
+
+    const traces = item.traces.length
+      ? item.traces.map(t => `
+          <div class="wi-trace-row">
+            <span class="wi-trace-prompt" title="${escHtml(t.prompt)}">${escHtml(truncate(t.prompt.replace(/\s+/g, ' '), 110))}</span>
+            <span class="inbox-time">${fmtDateTime(t.dateTime)}</span>
+            <span class="inbox-time tokens">${t.tokens.toLocaleString()}</span>
+            <button type="button" class="ws-btn danger" onclick="detachTrace('${escHtml(t.id)}')">Unlink</button>
+          </div>`).join('')
+      : '<div style="color:#8b949e;font-size:12px;padding:8px 0">No prompts linked yet.</div>';
+
+    document.getElementById('wi-modal-body').innerHTML = `
+      <div style="margin-bottom:14px">${refs}</div>
+
+      <div class="wi-detail-field">
+        <label for="wi-edit-title">Title</label>
+        <input type="text" id="wi-edit-title" value="${escHtml(item.title)}">
+      </div>
+
+      <div class="wi-detail-field">
+        <label for="wi-edit-summary">Summary</label>
+        <textarea id="wi-edit-summary">${escHtml(item.summary || '')}</textarea>
+        <div class="wi-generated-note">${item.summarySource === 'user' ? 'Edited by you' : 'Generated from the first prompt. Editing marks it as yours.'}</div>
+      </div>
+
+      <div class="wi-detail-row">
+        <div class="wi-detail-field">
+          <label for="wi-edit-kind">Kind</label>
+          <select id="wi-edit-kind">
+            ${WORK_ITEM_KINDS.map(k => `<option value="${k}" ${k === item.kind ? 'selected' : ''}>${k}</option>`).join('')}
+          </select>
+        </div>
+        <div class="wi-detail-field">
+          <label for="wi-edit-status">Status</label>
+          <select id="wi-edit-status">
+            ${WORK_ITEM_STATUSES.map(s => `<option value="${s}" ${s === item.status ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="ws-actions" style="margin-bottom:18px">
+        <button type="button" class="ws-btn" id="wi-save-btn" onclick="saveWorkItem()">Save changes</button>
+        <button type="button" class="ws-btn danger" onclick="removeWorkItem()">Delete work item</button>
+        <span class="ws-status" id="wi-save-status"></span>
+      </div>
+
+      <div class="dash-section-title" style="padding:0 0 8px">Linked prompts (${item.traces.length})</div>
+      <div>${traces}</div>
+
+      <div class="wi-meta" style="margin-top:16px">
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Tokens</span>
+          <span class="wi-meta-value tokens">${item.totalTokens.toLocaleString()}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Est Cost</span>
+          <span class="wi-meta-value credits">${fmtCredits(item.totalCredits)}</span>
+        </div>
+        <div class="wi-meta-item">
+          <span class="wi-meta-label">Created</span>
+          <span class="wi-meta-value">${fmtDateTime(item.createdAt)}</span>
+        </div>
+      </div>`;
+  }
+
+  async function saveWorkItem() {
+    const statusEl = document.getElementById('wi-save-status');
+    statusEl.textContent = 'Saving…';
+    try {
+      const item = await api('PATCH', `/api/work-items/${encodeURIComponent(openWorkItemId)}`, {
+        title: document.getElementById('wi-edit-title').value.trim(),
+        summary: document.getElementById('wi-edit-summary').value,
+        kind: document.getElementById('wi-edit-kind').value,
+        status: document.getElementById('wi-edit-status').value,
+      });
+      renderWorkItemDetail(item);
+      document.getElementById('wi-save-status').textContent = 'Saved';
+      loadWorkItems();
+    } catch (e) {
+      statusEl.textContent = e.message;
+    }
+  }
+
+  async function removeWorkItem() {
+    if (!confirm('Delete this work item? Linked prompts return to the inbox.')) return;
+    try {
+      await api('DELETE', `/api/work-items/${encodeURIComponent(openWorkItemId)}`);
+      closeWorkItemModal();
+      showWorkspaceTab(workspaceTab);
+    } catch (e) {
+      document.getElementById('wi-save-status').textContent = e.message;
+    }
+  }
+
+  async function detachTrace(traceId) {
+    try {
+      const item = await api('DELETE', `/api/work-items/${encodeURIComponent(openWorkItemId)}/traces/${encodeURIComponent(traceId)}`);
+      renderWorkItemDetail(item);
+      loadWorkItems();
+    } catch (e) {
+      document.getElementById('wi-save-status').textContent = e.message;
+    }
+  }
+
+  function closeWorkItemModal() {
+    openWorkItemId = null;
+    document.getElementById('wi-modal').classList.remove('open');
+  }
+
+  document.getElementById('wi-modal').addEventListener('click', function (e) {
+    if (e.target === this) closeWorkItemModal();
+  });
 
   // ── Live Tracer (Socket.io) ────────────────────
   // Connection is managed by connectLiveSocket()
@@ -788,11 +1293,7 @@ Duration:         ${fmtDuration(t.durationMs)}
   // ── Init ───────────────────────────────────────
   const initPage = getHashPage();
   const initProject = getHashProject();
-  if (initPage === 'live') {
-    connectLiveSocket(initProject);
-  } else {
-    loadDashboard();
-  }
+  if (initPage === 'live') connectLiveSocket(initProject);
   navigateTo(initPage, initProject);
 </script>
 </body>
