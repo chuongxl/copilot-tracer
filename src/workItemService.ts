@@ -543,7 +543,34 @@ export function splitWorkItem(
   };
 }
 
+export class WorkItemProjectMismatchError extends Error {
+  constructor() {
+    super('That prompt belongs to a different project.');
+    this.name = 'WorkItemProjectMismatchError';
+  }
+}
+
+/** True when a prompt was explicitly taken out of the inbox and not since restored. */
+function isTraceDismissed(traceId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM work_item_dismissed_traces WHERE trace_id = ?').get(traceId);
+}
+
 export function linkTraceToWorkItem(input: WorkItemTraceLinkInput): void {
+  // A work item aggregates tokens and credits for one project, so a trace from
+  // another project would silently inflate the wrong totals.
+  const scope = db.prepare(`
+    SELECT wi.project_id AS item_project, s.project_id AS trace_project
+    FROM work_items wi, traces t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE wi.id = ? AND t.id = ?
+  `).get(input.workItemId, input.traceId) as
+    | { item_project: string; trace_project: string | null }
+    | undefined;
+
+  if (scope && scope.trace_project !== scope.item_project) {
+    throw new WorkItemProjectMismatchError();
+  }
+
   db.prepare(`
     INSERT INTO work_item_traces (work_item_id, trace_id, linked_at, link_source, confidence)
     VALUES (?, ?, ?, ?, ?)
@@ -555,9 +582,13 @@ export function linkTraceToWorkItem(input: WorkItemTraceLinkInput): void {
     input.linkSource ?? 'detected',
     input.confidence ?? 0,
   );
-  // Claiming a prompt overrides an earlier dismissal, otherwise the trace would
-  // stay hidden from the inbox while also belonging to an item.
-  db.prepare('DELETE FROM work_item_dismissed_traces WHERE trace_id = ?').run(input.traceId);
+
+  // Only a deliberate attach overrides a dismissal. If automatic extraction
+  // cleared it too, re-running backfill would quietly resurrect every prompt
+  // the user had already waved away.
+  if ((input.linkSource ?? 'detected') === 'manual') {
+    db.prepare('DELETE FROM work_item_dismissed_traces WHERE trace_id = ?').run(input.traceId);
+  }
 }
 
 export function unlinkTraceFromWorkItem(workItemId: string, traceId: string): boolean {
@@ -577,6 +608,10 @@ export function persistWorkItemEvidence(
   const evidence = extractWorkItemEvidence(trace.prompt ?? '');
   const strong = evidence.references.filter((ref) => ref.confidence >= AUTO_LINK_CONFIDENCE);
   if (!strong.length) return empty;
+
+  // A dismissed prompt stays dismissed. Without this, "Group past traces"
+  // would re-link everything the user had explicitly waved away.
+  if (isTraceDismissed(trace.id)) return { status: 'dismissed', workItemIds: [] };
 
   const run = db.transaction(() => {
     const ids: string[] = [];

@@ -15,6 +15,7 @@ import {
   restoreDismissedTrace,
   splitWorkItem,
   WorkItemMergeError,
+  WorkItemProjectMismatchError,
   WorkItemSplitError,
   backfillWorkItems,
   buildWorkItemDraft,
@@ -455,10 +456,17 @@ ${prompt.trim()}`;
       return;
     }
 
-    linkTraceToWorkItem({ workItemId: req.params.id, traceId, linkSource: 'manual', confidence: 1 });
+    try {
+      linkTraceToWorkItem({ workItemId: req.params.id, traceId, linkSource: 'manual', confidence: 1 });
+    } catch (error) {
+      if (error instanceof WorkItemProjectMismatchError) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
     res.json(getWorkItem(req.params.id));
   });
-
   app.delete('/api/work-items/:id/traces/:traceId', (req, res) => {
     if (!getWorkItem(req.params.id)) {
       res.status(404).json({ error: 'work item not found' });

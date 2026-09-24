@@ -604,6 +604,45 @@ if (!service) {
     assert.equal(dismissTrace(projectId, 'trace:missing'), false);
   });
 
+  check('backfill does not resurrect a dismissed prompt', () => {
+    const trace = makeTrace('Fix DISMISS-9, the totals are wrong');
+    persistWorkItemEvidence(trace, projectId);
+    const item = getWorkItems(projectId).find((w) => w.title === 'DISMISS-9');
+    assert.ok(item, 'expected the ticket to group first');
+
+    unlinkTraceFromWorkItem(item.id, trace.id);
+    dismissTrace(projectId, trace.id, 'unrelated');
+
+    const again = persistWorkItemEvidence(trace, projectId);
+    assert.equal(again.status, 'dismissed');
+    assert.deepEqual(again.workItemIds, []);
+    assert.ok(
+      getDismissedTraces(projectId).some((t) => t.id === trace.id),
+      'automatic extraction must not clear a dismissal',
+    );
+    assert.equal(getWorkItem(item.id).traceCount, 0);
+  });
+
+  check('a manual attach still overrides a dismissal', () => {
+    const trace = makeTrace('Dismissed then deliberately claimed');
+    const item = createWorkItem({ projectId, title: 'Deliberate claim' });
+    dismissTrace(projectId, trace.id);
+
+    linkTraceToWorkItem({ workItemId: item.id, traceId: trace.id, linkSource: 'manual' });
+    assert.ok(!getDismissedTraces(projectId).some((t) => t.id === trace.id));
+  });
+
+  check('a trace cannot be linked to a work item in another project', () => {
+    const trace = makeTrace('Lives in the first project');
+    const foreign = createWorkItem({ projectId: otherProjectId, title: 'Elsewhere' });
+
+    assert.throws(
+      () => linkTraceToWorkItem({ workItemId: foreign.id, traceId: trace.id, linkSource: 'manual' }),
+      /different project/,
+    );
+    assert.equal(getWorkItem(foreign.id).traceCount, 0);
+  });
+
   check('detected work items start unconfirmed', () => {
     const trace = makeTrace('Fix NEWKEY-7 before the release');
     persistWorkItemEvidence(trace, projectId);

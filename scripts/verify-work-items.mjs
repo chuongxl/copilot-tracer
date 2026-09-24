@@ -333,7 +333,7 @@ async function main() {
     assert.ok(inbox.body.some((t) => t.id === orphanTraceId), 'restored prompt is not back in the inbox');
   });
 
-  await check('linking a dismissed prompt clears the dismissal', async () => {
+  await check('a manual attach clears the dismissal', async () => {
     await request(
       'POST',
       `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(orphanTraceId)}/dismiss`,
@@ -361,6 +361,38 @@ async function main() {
       {},
     );
     assert.equal(missing.status, 404);
+  });
+
+  await check('backfill does not resurrect a dismissed prompt', async () => {
+    await request('POST', `${base}/v1/traces`, otlpPayload({
+      sessionId: 'verify-session-dismiss',
+      repoUrl,
+      prompt: 'Investigate REGRESS-7, the dismissal keeps coming back',
+      traceId: '77777777777777777777777777777777',
+      spanId: '7777777777777777',
+    }));
+
+    const items = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items`)).body;
+    const item = items.find((w) => w.title === 'REGRESS-7');
+    assert.ok(item, 'expected REGRESS-7 to group on ingestion');
+
+    const detail = (await request('GET', `${base}/api/work-items/${encodeURIComponent(item.id)}`)).body;
+    const traceId = detail.traces[0].id;
+
+    await request('DELETE', `${base}/api/work-items/${encodeURIComponent(item.id)}/traces/${encodeURIComponent(traceId)}`);
+    await request(
+      'POST',
+      `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces/${encodeURIComponent(traceId)}/dismiss`,
+      { reason: 'unrelated' },
+    );
+
+    await request('POST', `${base}/api/projects/${encodeURIComponent(projectId)}/work-items/backfill`);
+
+    const dismissed = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/dismissed-traces`)).body;
+    assert.ok(dismissed.some((t) => t.id === traceId), 'backfill must leave the dismissal in place');
+
+    const after = (await request('GET', `${base}/api/work-items/${encodeURIComponent(item.id)}`)).body;
+    assert.equal(after.traceCount, 0, 'backfill must not re-link a dismissed prompt');
   });
 
   console.log('drafts');

@@ -197,7 +197,7 @@ export interface WorkItemTraceLinkInput {
 }
 
 export interface WorkItemEvidenceResult {
-  status: 'linked' | 'uncategorized';
+  status: 'linked' | 'uncategorized' | 'dismissed';
   workItemIds: string[];
 }
 

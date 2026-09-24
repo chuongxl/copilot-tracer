@@ -89,8 +89,8 @@ still classifies as a bug, which is the right call.
 
 ## Verification
 
-- `node scripts/test-work-item-extraction.mjs` — 64 assertions
-- `node scripts/verify-work-items.mjs` — 42 assertions
+- `node scripts/test-work-item-extraction.mjs` — 67 assertions
+- `node scripts/verify-work-items.mjs` — 43 assertions
 - `node scripts/evaluate-work-item-grouping.mjs` — 24 fixtures, precision and
   recall still 100%, zero sensitive leaks
 - `npx tsc --noEmit`
@@ -100,3 +100,43 @@ still classifies as a bug, which is the right call.
 The browser run earned its keep again. It caught every work item card rendering
 "DETECTED DETECTED", because the status badge and the source badge both spelled
 the same word. The source badge now reads "auto".
+
+## Two bugs the code review caught
+
+Both were real, so both are fixed here rather than deferred.
+
+**Backfill undid explicit dismissals.** This one I introduced. Gap 2 made
+`linkTraceToWorkItem` delete the dismissal row, reasoning that claiming a
+prompt should override having waved it away. True for a deliberate attach,
+wrong for everything else, because automatic extraction calls the same
+function. Dismiss a prompt, click "Group past traces", and it silently came
+back linked. The dismissal is now cleared only when `linkSource` is `manual`,
+and `persistWorkItemEvidence` returns a new `dismissed` status instead of
+grouping a prompt the user already rejected.
+
+**A trace could be attached across projects.** Pre-existing, from task 5. The
+attach route checked that the work item and the trace both existed, never that
+they shared a project, so a prompt from project A could land on an item in
+project B and inflate its tokens and credits. The check lives in
+`linkTraceToWorkItem` rather than the route, so no caller can skip it. The
+route maps `WorkItemProjectMismatchError` to a 400.
+
+## Two bugs the code review caught
+
+Both were real, so both are fixed here rather than deferred.
+
+**Backfill undid explicit dismissals.** This one I introduced. Gap 2 made
+`linkTraceToWorkItem` delete the dismissal row, reasoning that claiming a
+prompt should override having waved it away. True for a deliberate attach,
+wrong for everything else, because automatic extraction calls the same
+function. Dismiss a prompt, click "Group past traces", and it came back
+linked. The dismissal is now cleared only when `linkSource` is `manual`, and
+`persistWorkItemEvidence` returns a new `dismissed` status instead of grouping
+a prompt the user already rejected.
+
+**A trace could be attached across projects.** Pre-existing, from task 5. The
+attach route checked that the work item and the trace both existed, never that
+they shared a project, so a prompt from project A could land on an item in
+project B and inflate its tokens and credits. The check lives in
+`linkTraceToWorkItem` rather than the route, so no caller can skip it. The
+route maps `WorkItemProjectMismatchError` to a 400.

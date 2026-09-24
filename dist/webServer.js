@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
-import { applyWorkItemDraft, CompletionNotConfirmedError, dismissTrace, getDismissedTraces, mergeWorkItems, refreshWorkItemEvidence, restoreDismissedTrace, splitWorkItem, WorkItemMergeError, WorkItemSplitError, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
+import { applyWorkItemDraft, CompletionNotConfirmedError, dismissTrace, getDismissedTraces, mergeWorkItems, refreshWorkItemEvidence, restoreDismissedTrace, splitWorkItem, WorkItemMergeError, WorkItemProjectMismatchError, WorkItemSplitError, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
 import { isWorkItemKind } from './workItemExtraction.js';
 import { WORK_ITEM_DISMISS_REASONS, WORK_ITEM_STATUSES } from './types.js';
 import { traceEvents } from './proxy.js';
@@ -380,7 +380,16 @@ ${prompt.trim()}`;
             res.status(404).json({ error: 'trace not found' });
             return;
         }
-        linkTraceToWorkItem({ workItemId: req.params.id, traceId, linkSource: 'manual', confidence: 1 });
+        try {
+            linkTraceToWorkItem({ workItemId: req.params.id, traceId, linkSource: 'manual', confidence: 1 });
+        }
+        catch (error) {
+            if (error instanceof WorkItemProjectMismatchError) {
+                res.status(400).json({ error: error.message });
+                return;
+            }
+            throw error;
+        }
         res.json(getWorkItem(req.params.id));
     });
     app.delete('/api/work-items/:id/traces/:traceId', (req, res) => {
