@@ -50,9 +50,128 @@ db.exec(`
     FOREIGN KEY(session_id) REFERENCES sessions(id)
   );
 `);
+// Work items group traces by the piece of work they belong to. Kept in a
+// separate exec block so the original schema above stays easy to diff.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS work_items (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    kind TEXT NOT NULL DEFAULT 'unknown',
+    status TEXT NOT NULL DEFAULT 'active',
+    source TEXT NOT NULL DEFAULT 'detected',
+    summary_source TEXT NOT NULL DEFAULT 'generated',
+    confidence REAL NOT NULL DEFAULT 0,
+    extractor_version TEXT,
+    acceptance_criteria TEXT,
+    draft_generator_version TEXT,
+    criteria_source TEXT,
+    git_evidence TEXT,
+    evidence_checked_at TEXT,
+    completion_note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS work_item_traces (
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    trace_id TEXT NOT NULL REFERENCES traces(id),
+    linked_at TEXT NOT NULL,
+    link_source TEXT NOT NULL DEFAULT 'detected',
+    confidence REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (work_item_id, trace_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS work_item_references (
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL,
+    reference_key TEXT NOT NULL,
+    url TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (work_item_id, reference_type, reference_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS work_item_dismissed_traces (
+    trace_id TEXT PRIMARY KEY REFERENCES traces(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    reason TEXT NOT NULL DEFAULT 'ignored',
+    dismissed_at TEXT NOT NULL
+  );
+
+  -- Medium-confidence links the engineer has not accepted yet. A suggestion is
+  -- never a link: it only becomes one when accepted, which is what makes the
+  -- design's "suggested links accepted" measure countable.
+  CREATE TABLE IF NOT EXISTS work_item_suggestions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    trace_id TEXT NOT NULL REFERENCES traces(id),
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    detail TEXT,
+    confidence REAL NOT NULL DEFAULT 0,
+    ambiguous INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE (trace_id, work_item_id)
+  );
+
+  -- Status transitions, so cycle time is measured from recorded events rather
+  -- than inferred from updated_at, which any edit overwrites.
+  CREATE TABLE IF NOT EXISTS work_item_status_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    changed_at TEXT NOT NULL
+  );
+
+  -- Merge, split and unlink events, so the design's correction rate is a count
+  -- of what actually happened rather than a guess from current state.
+  CREATE TABLE IF NOT EXISTS work_item_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_traces_trace ON work_item_traces(trace_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_refs_lookup ON work_item_references(reference_type, reference_key);
+  CREATE INDEX IF NOT EXISTS idx_work_item_dismissed_project ON work_item_dismissed_traces(project_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_suggestions_project ON work_item_suggestions(project_id, state);
+  CREATE INDEX IF NOT EXISTS idx_work_item_suggestions_trace ON work_item_suggestions(trace_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_status_history_item ON work_item_status_history(work_item_id, changed_at);
+  CREATE INDEX IF NOT EXISTS idx_work_item_corrections_project ON work_item_corrections(project_id);
+`);
 // Migrate existing DBs
 try {
     db.prepare('ALTER TABLE projects ADD COLUMN repo_url TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN acceptance_criteria TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN draft_generator_version TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN criteria_source TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN git_evidence TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN evidence_checked_at TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN completion_note TEXT').run();
 }
 catch { }
 try {
@@ -63,6 +182,42 @@ try {
     db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)').run();
 }
 catch { }
+// The status vocabulary gained detected/paused/blocked and renamed done to
+// completed, so existing rows carry the old spelling forward.
+try {
+    db.prepare("UPDATE work_items SET status = 'completed' WHERE status = 'done'").run();
+}
+catch { }
+// Which prompt first produced a reference, and how a trace relates to its item.
+try {
+    db.prepare('ALTER TABLE work_item_references ADD COLUMN source_trace_id TEXT REFERENCES traces(id)').run();
+}
+catch { }
+try {
+    db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'work'").run();
+}
+catch { }
+// Items that predate the history table get one synthetic row, so cycle-time
+// queries do not silently skip them.
+try {
+    db.prepare(`
+    INSERT INTO work_item_status_history (work_item_id, from_status, to_status, changed_at)
+    SELECT id, NULL, status, created_at FROM work_items
+    WHERE id NOT IN (SELECT work_item_id FROM work_item_status_history)
+  `).run();
+}
+catch { }
+// Exposed so companion modules (work items) can query without opening a second
+// connection to the same file.
+export { db };
+export function getSessionProjectId(sessionId) {
+    const row = db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId);
+    return row?.project_id ?? null;
+}
+let tracePersistedListener = null;
+export function setTracePersistedListener(listener) {
+    tracePersistedListener = listener;
+}
 export function ensureProject(projectPath, repoUrl) {
     const id = 'project:' + projectPath;
     const now = new Date().toISOString();
@@ -93,6 +248,9 @@ export function findProjectByRepo(repoUrl) {
     const row = db.prepare('SELECT id, path, local_path FROM projects WHERE repo_url = ?').get(repoUrl);
     return row ? { id: row.id, path: row.path, local_path: row.local_path } : null;
 }
+export function projectExists(projectId) {
+    return !!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
+}
 export function createSession(id, projectId) {
     // Backfill-safe upsert: insert if missing, set project_id only when a project is
     // provided AND the session currently has none (never null out an existing link).
@@ -105,8 +263,109 @@ export function createSession(id, projectId) {
       END
   `).run(id, new Date().toISOString(), projectId ?? null);
 }
-export function getDashboard(page = 1, pageSize = 12) {
-    const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get();
+const EMPTY_WORK_ITEM_SUMMARY = {
+    total: 0,
+    active: 0,
+    detected: 0,
+    completed: 0,
+    ticketReferences: 0,
+    unlinkedPrompts: 0,
+    recent: [],
+};
+/**
+ * Work-item rollups for a page of project cards. Kept here rather than in
+ * workItemService so the dashboard query does not import the whole service.
+ *
+ * Batched over the whole page: four queries total, not four per card. The
+ * per-project version re-prepared its statements on every card, so a dashboard
+ * of twelve projects paid for forty-eight prepares it did not need.
+ */
+function getProjectWorkItemSummaries(projectIds) {
+    const summaries = new Map();
+    if (!projectIds.length)
+        return summaries;
+    for (const id of projectIds) {
+        summaries.set(id, { ...EMPTY_WORK_ITEM_SUMMARY, recent: [] });
+    }
+    const placeholders = projectIds.map(() => '?').join(', ');
+    const counts = db.prepare(`
+    SELECT
+      project_id,
+      COUNT(*) as total,
+      COALESCE(SUM(status = 'active'), 0) as active,
+      COALESCE(SUM(status = 'detected'), 0) as detected,
+      COALESCE(SUM(status = 'completed'), 0) as completed
+    FROM work_items
+    WHERE project_id IN (${placeholders})
+    GROUP BY project_id
+  `).all(...projectIds);
+    for (const row of counts) {
+        const summary = summaries.get(row.project_id);
+        if (!summary)
+            continue;
+        summary.total = row.total;
+        summary.active = row.active;
+        summary.detected = row.detected;
+        summary.completed = row.completed;
+    }
+    const references = db.prepare(`
+    SELECT wi.project_id, COUNT(DISTINCT r.reference_type || '|' || r.reference_key) as count
+    FROM work_item_references r
+    JOIN work_items wi ON wi.id = r.work_item_id
+    WHERE wi.project_id IN (${placeholders})
+    GROUP BY wi.project_id
+  `).all(...projectIds);
+    for (const row of references) {
+        const summary = summaries.get(row.project_id);
+        if (summary)
+            summary.ticketReferences = row.count;
+    }
+    const unlinked = db.prepare(`
+    SELECT s.project_id, COUNT(*) as count
+    FROM traces t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE s.project_id IN (${placeholders})
+      AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
+    GROUP BY s.project_id
+  `).all(...projectIds);
+    for (const row of unlinked) {
+        const summary = summaries.get(row.project_id);
+        if (summary)
+            summary.unlinkedPrompts = row.count;
+    }
+    // The window function does the per-project "top 3" that a LIMIT cannot do
+    // across groups.
+    const recent = db.prepare(`
+    SELECT project_id, id, title, status, updated_at FROM (
+      SELECT
+        project_id, id, title, status, updated_at,
+        ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY updated_at DESC, id ASC) as rank
+      FROM work_items
+      WHERE project_id IN (${placeholders}) AND status NOT IN ('archived')
+    ) WHERE rank <= 3
+    ORDER BY project_id ASC, rank ASC
+  `).all(...projectIds);
+    for (const row of recent) {
+        const summary = summaries.get(row.project_id);
+        if (!summary)
+            continue;
+        summary.recent.push({
+            id: row.id,
+            title: row.title,
+            status: row.status,
+            updatedAt: row.updated_at,
+        });
+    }
+    return summaries;
+}
+export function getDashboard(page = 1, pageSize = 12, query = '') {
+    const filter = query.trim();
+    const filterClause = filter
+        ? 'WHERE LOWER(p.path) LIKE ? OR LOWER(COALESCE(p.local_path, \'\')) LIKE ? OR LOWER(COALESCE(p.repo_url, \'\')) LIKE ?'
+        : '';
+    const filterParams = filter ? [`%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`, `%${filter.toLowerCase()}%`] : [];
+    const projectCount = db.prepare(`SELECT COUNT(*) as count FROM projects p ${filterClause}`).get(...filterParams);
     const totalProjects = projectCount.count;
     const totalPages = Math.max(1, Math.ceil(totalProjects / pageSize));
     const currentPage = Math.min(page, totalPages);
@@ -121,10 +380,11 @@ export function getDashboard(page = 1, pageSize = 12) {
     FROM projects p
     LEFT JOIN sessions s ON s.project_id = p.id
     LEFT JOIN traces t ON t.session_id = s.id
+    ${filterClause}
     GROUP BY p.id
     ORDER BY last_active_at DESC, p.id ASC
     LIMIT ? OFFSET ?
-  `).all(pageSize, offset);
+  `).all(...filterParams, pageSize, offset);
     const totals = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM projects) as projects,
@@ -132,16 +392,18 @@ export function getDashboard(page = 1, pageSize = 12) {
       COALESCE((SELECT SUM(tokens_total) FROM traces), 0) as tokens,
       COALESCE((SELECT SUM(ai_credits) FROM traces), 0) as credits
   `).get();
+    const workItemSummaries = getProjectWorkItemSummaries(projects.map((p) => p.id));
+    const lastSessionStmt = db.prepare(`
+    SELECT s.id,
+      COALESCE((SELECT SUM(tokens_total) FROM traces WHERE session_id = s.id), 0) as tokens,
+      COALESCE((SELECT SUM(ai_credits) FROM traces WHERE session_id = s.id), 0) as credits
+    FROM sessions s
+    WHERE s.project_id = ?
+    ORDER BY s.started_at DESC
+    LIMIT 1
+  `);
     const enriched = projects.map(p => {
-        const lastSession = db.prepare(`
-      SELECT s.id,
-        COALESCE((SELECT SUM(tokens_total) FROM traces WHERE session_id = s.id), 0) as tokens,
-        COALESCE((SELECT SUM(ai_credits) FROM traces WHERE session_id = s.id), 0) as credits
-      FROM sessions s
-      WHERE s.project_id = ?
-      ORDER BY s.started_at DESC
-      LIMIT 1
-    `).get(p.id);
+        const lastSession = lastSessionStmt.get(p.id);
         return {
             id: p.id,
             path: p.path,
@@ -152,8 +414,25 @@ export function getDashboard(page = 1, pageSize = 12) {
             totalCredits: p.total_credits || 0,
             lastActiveAt: p.last_active_at,
             lastSession: lastSession ?? null,
+            workItems: workItemSummaries.get(p.id) ?? { ...EMPTY_WORK_ITEM_SUMMARY, recent: [] },
         };
     });
+    const workItemTotals = db.prepare(`
+    SELECT
+      COALESCE(SUM(status NOT IN ('completed', 'archived')), 0) as open,
+      COALESCE(SUM(status = 'active'), 0) as active,
+      COALESCE(SUM(status = 'detected'), 0) as detected,
+      COALESCE(SUM(status = 'completed'), 0) as completed
+    FROM work_items
+  `).get();
+    const unlinkedTotal = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM traces t
+    JOIN sessions s ON s.id = t.session_id
+    WHERE s.project_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
+  `).get();
     return {
         projects: enriched,
         totals: {
@@ -161,6 +440,13 @@ export function getDashboard(page = 1, pageSize = 12) {
             sessions: totals.sessions,
             tokens: totals.tokens,
             credits: totals.credits,
+        },
+        workItemTotals: {
+            open: workItemTotals.open,
+            active: workItemTotals.active,
+            detected: workItemTotals.detected,
+            completed: workItemTotals.completed,
+            unlinkedPrompts: unlinkedTotal.count,
         },
         pagination: {
             page: currentPage,
@@ -205,6 +491,15 @@ export function upsertTrace(entry) {
         status: entry.status,
         error: entry.error ?? null,
     });
+    // Derived data must never break or slow ingestion, so failures are swallowed.
+    if (tracePersistedListener) {
+        try {
+            tracePersistedListener(entry);
+        }
+        catch (error) {
+            console.error('[work-items] trace listener failed:', error?.message ?? error);
+        }
+    }
 }
 export function getTraces(sessionId, limit = 100) {
     const rows = sessionId

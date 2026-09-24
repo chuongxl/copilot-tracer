@@ -126,8 +126,123 @@ Open http://localhost:4747 after starting the daemon.
 
 - **Summary cards** — total projects, sessions, tokens, credits
 - **Project cards** — each project shows path, session count, tokens, credits, last active
+- **Project filter** — search projects by path, local path, or repository URL
 - **Click a project** → opens live tracer filtered to that project
 <img width="737" height="410" alt="image" src="https://github.com/user-attachments/assets/dc20653b-8774-46b3-9a42-6e7bb934aded" />
+
+---
+
+## Work Items
+
+Traces are grouped into work items so you can see effort per ticket instead of
+per prompt. When a prompt mentions a ticket, the tracer records the reference
+and attaches the trace to a work item for that project.
+
+Recognised references:
+
+| Source | Example |
+|--------|---------|
+| Jira | `ABC-123`, `https://jira.acme.com/browse/ABC-123` |
+| GitHub issue | `https://github.com/acme/app/issues/42`, `acme/app#42` |
+| GitHub PR | `https://github.com/acme/app/pull/7` |
+| Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/9001` |
+| Linear | `https://linear.app/team/issue/ENG-88/title` |
+
+Extraction is deterministic: no model call, no network, nothing added to the
+ingestion latency. Prompts are also classified as feature, bug, task, refactor,
+investigation, documentation, operations, or unknown. A prompt with no ticket
+reference is left alone and shows up in the uncategorized inbox, where you can
+attach it to a work item by hand.
+
+Standards that look like ticket keys (`UTF-8`, `SHA-256`, `RFC-2119`) are
+ignored.
+
+### API
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/projects/:id/work-items?status=` | List work items for a project |
+| `GET` | `/api/projects/:id/uncategorized-traces?limit=` | Traces not yet grouped |
+| `POST` | `/api/projects/:id/work-items/backfill` | Group traces captured before this feature existed |
+| `GET` | `/api/work-items/:id` | One work item with references and linked traces |
+| `POST` | `/api/work-items` | Create a work item by hand |
+| `PATCH` | `/api/work-items/:id` | Edit title, summary, kind, status, acceptance criteria |
+| `GET` | `/api/work-items/:id/draft` | Preview a generated draft without saving it |
+| `POST` | `/api/work-items/:id/draft` | Regenerate summary, criteria and kind from linked prompts |
+| `POST` | `/api/work-items/:id/refresh-evidence` | Re-read local git for commits and branches citing the ticket |
+| `DELETE` | `/api/work-items/:id` | Delete a work item |
+| `POST` | `/api/work-items/:id/traces` | Attach a trace (`{ "traceId": "..." }`) |
+| `DELETE` | `/api/work-items/:id/traces/:traceId` | Detach a trace |
+
+Existing history is not grouped automatically. Run the backfill once:
+
+```bash
+curl -X POST "http://localhost:4747/api/projects/$(node -e 'console.log(encodeURIComponent(process.argv[1]))' 'project:/path/to/repo')/work-items/backfill"
+```
+
+Design notes live in `docs/work-items-productivity-design.md`. Measured grouping
+quality and the decision not to add similarity scoring or AI enrichment are in
+`docs/work-items-evaluation.md`. Re-measure with `npm run eval:work-items`,
+which fails if precision drops below 95% or if any sensitive-looking value is
+read as a ticket. `npm run demo:work-items` boots a seeded throwaway daemon for
+manual clicking; a browser walkthrough with screenshots is in
+`docs/screenshot/work-items/`, with the suggestion tier in
+`docs/screenshot/suggestions/` and the analytics tab in
+`docs/screenshot/analytics/`. How the suggestion thresholds and the analytics
+measures were chosen is written up in `docs/work-items-phase-5-7.md`.
+
+### Workspace
+
+Click a project card on the dashboard to open its workspace at
+`#/project?project=<id>`.
+
+**Work items tab.** One card per work item with its ticket reference, kind,
+status, linked prompt count, tokens, and cost. Filter by status. Click a card to
+edit the title, summary, kind, status, and acceptance criteria, or to unlink a
+prompt. Editing a generated summary or criteria marks them as yours, so they
+will not be overwritten later.
+
+**Generate draft.** Rebuilds the summary, acceptance criteria and kind from the
+prompts linked to the item. Criteria come from bullets under an "acceptance
+criteria" heading and from any line stating an obligation ("must", "should",
+"needs to"). Fields you edited are left alone. Nothing leaves your machine:
+the draft is plain text parsing, not a model call.
+
+**Git evidence.** "Check git evidence" reads the current branch, the origin
+remote, and the last 50 commits of the project checkout, then keeps the commits
+whose subject cites one of the item's ticket keys. It only reads. Evidence never
+moves an item to done by itself, and the API returns 409 unless the request
+carries `confirmCompletion: true`. Projects detected from a repository URL have
+no checkout on this machine, so they report an explicit evidence error instead
+of silently showing nothing.
+
+**Inbox tab.** Prompts in the project that no work item has claimed. Attach one
+to an existing item or spin up a new item from it, or dismiss it as not work.
+
+**Suggestions.** When a prompt carries no ticket key but reads like an open
+item, the inbox shows a suggested match inline with Accept and No buttons. A
+suggestion is never a link. Nothing moves until you click. Matching runs on
+distinctive words only: "dashboard", "api", "test", "bug" and friends are
+stripped first, so "fix the dashboard API" and "update the dashboard API code"
+score zero against each other instead of collapsing into one item. When more
+than one item could match, all candidates are flagged ambiguous and the prompt
+asks you to pick. Accepting one rejects the rest for that prompt.
+
+**Productivity tab.** Totals for the project, then the most expensive work,
+what was recently completed, and breakdowns by kind and by status. Cycle time
+is measured from `work_item_status_history`, not `updated_at`, so editing a
+title does not reset the clock. A dash means no data, which is deliberate:
+"nothing completed yet" and "completed instantly" must not look alike.
+
+The Grouping quality panel at the bottom carries the six measures the design
+says to watch before adding more automation: how many prompts got a candidate,
+how many auto-links survived, what share of suggestions you accepted, what is
+still unlinked, how many merges and splits you had to make, and how many
+completions had real evidence. `GET /api/analytics` returns the same numbers
+across every project.
+
+**Group past traces.** Runs the backfill over existing history. Needed once
+after upgrading, since extraction only fires on newly captured traces.
 
 ---
 
