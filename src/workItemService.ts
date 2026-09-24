@@ -5,12 +5,21 @@ import {
   deriveWorkItemSummary,
   extractWorkItemEvidence,
   generateWorkItemDraft,
+  SIMILARITY_SUGGEST_MIN,
+  similarityScore,
 } from './workItemExtraction.js';
-import type { TicketReferenceType, WorkItemDraft, WorkItemKind } from './workItemExtraction.js';
+import type {
+  TicketReference,
+  TicketReferenceType,
+  WorkItemDraft,
+  WorkItemKind,
+} from './workItemExtraction.js';
 import { collectGitEvidence, matchEvidenceToKeys } from './workItemGitEvidence.js';
+import { WORK_ITEM_CLOSED_STATUSES } from './types.js';
 import type {
   CreateWorkItemInput,
   DismissedTrace,
+  SuggestedTrace,
   TraceEntry,
   UpdateWorkItemInput,
   WorkItem,
@@ -20,6 +29,9 @@ import type {
   WorkItemLinkSource,
   WorkItemReference,
   WorkItemStatus,
+  WorkItemSuggestion,
+  WorkItemSuggestionReason,
+  WorkItemSuggestionState,
   WorkItemTraceLinkInput,
   WorkItemTraceSummary,
 } from './types.js';
@@ -72,7 +84,7 @@ function loadReferences(workItemIds: string[]): Map<string, WorkItemReference[]>
 
   const placeholders = workItemIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT work_item_id, reference_type, reference_key, url
+    SELECT work_item_id, reference_type, reference_key, url, source_trace_id
     FROM work_item_references
     WHERE work_item_id IN (${placeholders})
     ORDER BY created_at ASC, reference_type ASC, reference_key ASC
@@ -81,6 +93,7 @@ function loadReferences(workItemIds: string[]): Map<string, WorkItemReference[]>
     reference_type: string;
     reference_key: string;
     url: string | null;
+    source_trace_id: string | null;
   }>;
 
   for (const row of rows) {
@@ -89,6 +102,7 @@ function loadReferences(workItemIds: string[]): Map<string, WorkItemReference[]>
       type: row.reference_type as TicketReferenceType,
       key: row.reference_key,
       url: row.url,
+      sourceTraceId: row.source_trace_id,
     });
     byItem.set(row.work_item_id, list);
   }
@@ -206,8 +220,13 @@ export function findWorkItemIdByReference(
   return row?.id ?? null;
 }
 
-/** Traces in a project that no work item has claimed and nobody has dismissed. */
-export function getUncategorizedTraces(projectId: string, limit = 100): WorkItemTraceSummary[] {
+/**
+ * Traces in a project that no work item has claimed and nobody has dismissed,
+ * each carrying any pending suggestions. Suggestions ride along with the inbox
+ * rather than forming a rival list, because both answer the same question:
+ * what should happen to this prompt?
+ */
+export function getUncategorizedTraces(projectId: string, limit = 100): SuggestedTrace[] {
   const rows = db.prepare(`
     SELECT t.id, t.session_id, t.date_time, t.prompt, t.tokens_total, t.ai_credits,
            t.duration_ms, t.status
@@ -220,6 +239,8 @@ export function getUncategorizedTraces(projectId: string, limit = 100): WorkItem
     LIMIT ?
   `).all(projectId, limit) as Array<Record<string, unknown>>;
 
+  const suggestions = loadPendingSuggestions(rows.map((t) => t.id as string));
+
   return rows.map((t) => ({
     id: t.id as string,
     sessionId: t.session_id as string,
@@ -229,7 +250,8 @@ export function getUncategorizedTraces(projectId: string, limit = 100): WorkItem
     credits: (t.ai_credits as number) ?? 0,
     durationMs: (t.duration_ms as number) ?? 0,
     status: t.status as TraceEntry['status'],
-    linkSource: 'detected' as WorkItemLinkSource,
+    linkSource: (suggestions.has(t.id as string) ? 'suggested' : 'detected') as WorkItemLinkSource,
+    suggestions: suggestions.get(t.id as string) ?? [],
   }));
 }
 
@@ -298,13 +320,44 @@ export function saveTicketReference(input: {
   type: TicketReferenceType;
   key: string;
   url?: string | null;
+  sourceTraceId?: string | null;
 }): void {
   db.prepare(`
-    INSERT INTO work_item_references (work_item_id, reference_type, reference_key, url, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO work_item_references (
+      work_item_id, reference_type, reference_key, url, source_trace_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(work_item_id, reference_type, reference_key)
-      DO UPDATE SET url = COALESCE(excluded.url, work_item_references.url)
-  `).run(input.workItemId, input.type, input.key, input.url ?? null, new Date().toISOString());
+      DO UPDATE SET
+        url = COALESCE(excluded.url, work_item_references.url),
+        source_trace_id = COALESCE(work_item_references.source_trace_id, excluded.source_trace_id)
+  `).run(
+    input.workItemId,
+    input.type,
+    input.key,
+    input.url ?? null,
+    input.sourceTraceId ?? null,
+    new Date().toISOString(),
+  );
+}
+
+/** Append a status transition. Cycle-time queries read only this table. */
+function recordStatusChange(
+  workItemId: string,
+  from: string | null,
+  to: string,
+  at = new Date().toISOString(),
+): void {
+  db.prepare(`
+    INSERT INTO work_item_status_history (work_item_id, from_status, to_status, changed_at)
+    VALUES (?, ?, ?, ?)
+  `).run(workItemId, from, to, at);
+}
+
+/** Record a manual correction so the merge and split rate is measurable. */
+export function recordCorrection(projectId: string, kind: 'merge' | 'split' | 'unlink'): void {
+  db.prepare(
+    'INSERT INTO work_item_corrections (project_id, kind, created_at) VALUES (?, ?, ?)',
+  ).run(projectId, kind, new Date().toISOString());
 }
 
 export function createWorkItem(input: CreateWorkItemInput): WorkItem {
@@ -338,8 +391,11 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
         type: reference.type,
         key: reference.key,
         url: reference.url,
+        sourceTraceId: reference.sourceTraceId,
       });
     }
+
+    recordStatusChange(id, null, input.status ?? 'active', now);
   });
 
   run();
@@ -389,6 +445,10 @@ export function updateWorkItem(id: string, input: UpdateWorkItemInput): WorkItem
     db.prepare(`UPDATE work_items SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   }
 
+  if (input.status !== undefined && input.status !== existing.status) {
+    recordStatusChange(id, existing.status, input.status);
+  }
+
   return getWorkItem(id);
 }
 
@@ -396,6 +456,8 @@ export function deleteWorkItem(id: string): boolean {
   const run = db.transaction(() => {
     db.prepare('DELETE FROM work_item_traces WHERE work_item_id = ?').run(id);
     db.prepare('DELETE FROM work_item_references WHERE work_item_id = ?').run(id);
+    db.prepare('DELETE FROM work_item_status_history WHERE work_item_id = ?').run(id);
+    db.prepare('DELETE FROM work_item_suggestions WHERE work_item_id = ?').run(id);
     return db.prepare('DELETE FROM work_items WHERE id = ?').run(id).changes > 0;
   });
   return run();
@@ -455,8 +517,10 @@ export function mergeWorkItems(targetId: string, sourceIds: string[]): WorkItemD
       `).run(targetId, sourceId);
 
       db.prepare(`
-        INSERT INTO work_item_references (work_item_id, reference_type, reference_key, url, created_at)
-        SELECT ?, reference_type, reference_key, url, created_at
+        INSERT INTO work_item_references (
+          work_item_id, reference_type, reference_key, url, source_trace_id, created_at
+        )
+        SELECT ?, reference_type, reference_key, url, source_trace_id, created_at
         FROM work_item_references WHERE work_item_id = ?
         ON CONFLICT(work_item_id, reference_type, reference_key)
           DO UPDATE SET url = COALESCE(excluded.url, work_item_references.url)
@@ -473,11 +537,14 @@ export function mergeWorkItems(targetId: string, sourceIds: string[]): WorkItemD
 
       db.prepare('DELETE FROM work_item_traces WHERE work_item_id = ?').run(sourceId);
       db.prepare('DELETE FROM work_item_references WHERE work_item_id = ?').run(sourceId);
+      db.prepare('DELETE FROM work_item_status_history WHERE work_item_id = ?').run(sourceId);
+      db.prepare('DELETE FROM work_item_suggestions WHERE work_item_id = ?').run(sourceId);
       db.prepare('DELETE FROM work_items WHERE id = ?').run(sourceId);
     }
 
     db.prepare('UPDATE work_items SET summary = ?, acceptance_criteria = ?, updated_at = ? WHERE id = ?')
       .run(summary, JSON.stringify(criteria), new Date().toISOString(), targetId);
+    recordCorrection(target.project_id, 'merge');
   });
 
   run();
@@ -534,6 +601,8 @@ export function splitWorkItem(
     for (const traceId of traceIds) move.run(createdId, id, traceId);
 
     db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(now, id);
+    recordStatusChange(createdId, null, 'active', now);
+    recordCorrection(source.project_id, 'split');
   });
 
   run();
@@ -592,8 +661,272 @@ export function linkTraceToWorkItem(input: WorkItemTraceLinkInput): void {
 }
 
 export function unlinkTraceFromWorkItem(workItemId: string, traceId: string): boolean {
-  return db.prepare('DELETE FROM work_item_traces WHERE work_item_id = ? AND trace_id = ?')
+  const removed = db.prepare('DELETE FROM work_item_traces WHERE work_item_id = ? AND trace_id = ?')
     .run(workItemId, traceId).changes > 0;
+
+  if (removed) {
+    const owner = db.prepare('SELECT project_id FROM work_items WHERE id = ?').get(workItemId) as
+      | { project_id: string }
+      | undefined;
+    if (owner) recordCorrection(owner.project_id, 'unlink');
+  }
+
+  return removed;
+}
+
+// ── Suggestions ───────────────────────────────────────────────────────────────
+//
+// A suggestion is a proposed link the engineer has not accepted. Keeping it
+// separate from work_item_traces is what makes the design's "percentage of
+// suggested links accepted" measurable: an auto-link that was never questioned
+// and a guess the user approved are different facts.
+
+/** Items a new prompt could plausibly join. Closed work is not a candidate. */
+function openWorkItemsFor(projectId: string): Array<{
+  id: string;
+  title: string;
+  summary: string | null;
+  status: string;
+}> {
+  const closed = WORK_ITEM_CLOSED_STATUSES.map(() => '?').join(', ');
+  return db.prepare(`
+    SELECT id, title, summary, status FROM work_items
+    WHERE project_id = ? AND status NOT IN (${closed})
+    ORDER BY updated_at DESC
+    LIMIT 200
+  `).all(projectId, ...WORK_ITEM_CLOSED_STATUSES) as Array<{
+    id: string;
+    title: string;
+    summary: string | null;
+    status: string;
+  }>;
+}
+
+/** The text a work item is matched on: its title, summary and linked prompts. */
+function workItemMatchText(workItemId: string, title: string, summary: string | null): string {
+  const prompts = db.prepare(`
+    SELECT t.prompt FROM work_item_traces wit
+    JOIN traces t ON t.id = wit.trace_id
+    WHERE wit.work_item_id = ?
+    ORDER BY t.date_time DESC LIMIT 5
+  `).all(workItemId) as Array<{ prompt: string | null }>;
+
+  return [title, summary ?? '', ...prompts.map((p) => p.prompt ?? '')].join(' ');
+}
+
+interface SuggestionCandidate {
+  workItemId: string;
+  reason: WorkItemSuggestionReason;
+  detail: string;
+  confidence: number;
+}
+
+/**
+ * Propose links for a prompt that carried no strong evidence. Two sources:
+ * a medium-confidence reference such as a bare `#42` that an existing item
+ * already tracks, and strong wording overlap with a single open item.
+ */
+export function buildSuggestionCandidates(
+  projectId: string,
+  prompt: string,
+  references: TicketReference[] = [],
+): SuggestionCandidate[] {
+  const byItem = new Map<string, SuggestionCandidate>();
+
+  for (const reference of references) {
+    if (reference.confidence >= AUTO_LINK_CONFIDENCE) continue;
+    const workItemId = findWorkItemIdByReference(projectId, reference.type, reference.key);
+    if (!workItemId) continue;
+    byItem.set(workItemId, {
+      workItemId,
+      reason: 'reference',
+      detail: `Mentions ${reference.key}`,
+      confidence: reference.confidence,
+    });
+  }
+
+  const scored: SuggestionCandidate[] = [];
+  for (const item of openWorkItemsFor(projectId)) {
+    if (byItem.has(item.id)) continue;
+    const score = similarityScore(prompt, workItemMatchText(item.id, item.title, item.summary));
+    if (score < SIMILARITY_SUGGEST_MIN) continue;
+    scored.push({
+      workItemId: item.id,
+      reason: 'similarity',
+      detail: `Wording overlaps "${item.title}"`,
+      confidence: score,
+    });
+  }
+
+  scored.sort((a, b) => b.confidence - a.confidence);
+  // More candidates than this is a sign the threshold let noise through, and a
+  // wall of guesses is worse than none.
+  for (const candidate of scored.slice(0, 3)) byItem.set(candidate.workItemId, candidate);
+
+  return [...byItem.values()];
+}
+
+/**
+ * Store suggestions for a prompt. Returns how many are pending. A suggestion
+ * the user already decided on is never re-raised, otherwise rejecting one
+ * would be pointless.
+ */
+export function recordSuggestions(
+  projectId: string,
+  traceId: string,
+  candidates: SuggestionCandidate[],
+): number {
+  if (!candidates.length) return 0;
+
+  // The design separates "one clear match" from "several plausible items". The
+  // second needs a decision, not a nudge, so the UI is told which case it is.
+  const similar = candidates.filter((c) => c.reason === 'similarity');
+  const ambiguous = similar.length > 1;
+
+  const insert = db.prepare(`
+    INSERT INTO work_item_suggestions (
+      id, project_id, trace_id, work_item_id, reason, detail, confidence, ambiguous, state, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    ON CONFLICT(trace_id, work_item_id) DO NOTHING
+  `);
+
+  const now = new Date().toISOString();
+  let stored = 0;
+  const run = db.transaction(() => {
+    for (const candidate of candidates) {
+      const flagged = ambiguous && candidate.reason === 'similarity' ? 1 : 0;
+      const result = insert.run(
+        `suggestion:${randomUUID()}`,
+        projectId,
+        traceId,
+        candidate.workItemId,
+        candidate.reason,
+        candidate.detail,
+        candidate.confidence,
+        flagged,
+        now,
+      );
+      stored += result.changes;
+    }
+  });
+  run();
+
+  return stored;
+}
+
+const SUGGESTION_SELECT = `
+  SELECT s.id, s.project_id, s.trace_id, s.work_item_id, s.reason, s.detail,
+         s.confidence, s.ambiguous, s.state, s.created_at, s.decided_at,
+         wi.title AS work_item_title, wi.status AS work_item_status
+  FROM work_item_suggestions s
+  JOIN work_items wi ON wi.id = s.work_item_id
+`;
+
+interface SuggestionRow {
+  id: string;
+  project_id: string;
+  trace_id: string;
+  work_item_id: string;
+  reason: string;
+  detail: string | null;
+  confidence: number;
+  ambiguous: number;
+  state: string;
+  created_at: string;
+  decided_at: string | null;
+  work_item_title: string;
+  work_item_status: string;
+}
+
+function toSuggestion(row: SuggestionRow): WorkItemSuggestion {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    traceId: row.trace_id,
+    workItemId: row.work_item_id,
+    workItemTitle: row.work_item_title,
+    workItemStatus: row.work_item_status as WorkItemStatus,
+    reason: row.reason as WorkItemSuggestionReason,
+    detail: row.detail,
+    confidence: row.confidence,
+    ambiguous: row.ambiguous === 1,
+    state: row.state as WorkItemSuggestionState,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
+  };
+}
+
+/** Pending suggestions for the given prompts, keyed by trace id. */
+function loadPendingSuggestions(traceIds: string[]): Map<string, WorkItemSuggestion[]> {
+  const byTrace = new Map<string, WorkItemSuggestion[]>();
+  if (!traceIds.length) return byTrace;
+
+  const placeholders = traceIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    ${SUGGESTION_SELECT}
+    WHERE s.state = 'pending' AND s.trace_id IN (${placeholders})
+    ORDER BY s.confidence DESC, wi.title ASC
+  `).all(...traceIds) as SuggestionRow[];
+
+  for (const row of rows) {
+    const list = byTrace.get(row.trace_id) ?? [];
+    list.push(toSuggestion(row));
+    byTrace.set(row.trace_id, list);
+  }
+  return byTrace;
+}
+
+export function getSuggestion(id: string): WorkItemSuggestion | null {
+  const row = db.prepare(`${SUGGESTION_SELECT} WHERE s.id = ?`).get(id) as SuggestionRow | undefined;
+  return row ? toSuggestion(row) : null;
+}
+
+export class SuggestionAlreadyDecidedError extends Error {
+  constructor() {
+    super('That suggestion has already been accepted or rejected.');
+    this.name = 'SuggestionAlreadyDecidedError';
+  }
+}
+
+/**
+ * Accept a suggestion: link the prompt with source `similarity` and close out
+ * the competing suggestions for the same prompt, which would otherwise keep
+ * offering an answer the user has already given.
+ */
+export function acceptSuggestion(id: string): WorkItemSuggestion | null {
+  const existing = getSuggestion(id);
+  if (!existing) return null;
+  if (existing.state !== 'pending') throw new SuggestionAlreadyDecidedError();
+
+  const now = new Date().toISOString();
+  const run = db.transaction(() => {
+    linkTraceToWorkItem({
+      workItemId: existing.workItemId,
+      traceId: existing.traceId,
+      linkSource: existing.reason === 'reference' ? 'detected' : 'similarity',
+      confidence: existing.confidence,
+    });
+
+    db.prepare("UPDATE work_item_suggestions SET state = 'accepted', decided_at = ? WHERE id = ?")
+      .run(now, id);
+    db.prepare(`
+      UPDATE work_item_suggestions SET state = 'rejected', decided_at = ?
+      WHERE trace_id = ? AND id != ? AND state = 'pending'
+    `).run(now, existing.traceId, id);
+  });
+  run();
+
+  return getSuggestion(id);
+}
+
+export function rejectSuggestion(id: string): WorkItemSuggestion | null {
+  const existing = getSuggestion(id);
+  if (!existing) return null;
+  if (existing.state !== 'pending') throw new SuggestionAlreadyDecidedError();
+
+  db.prepare("UPDATE work_item_suggestions SET state = 'rejected', decided_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), id);
+  return getSuggestion(id);
 }
 
 // ── Extraction pipeline ───────────────────────────────────────────────────────
@@ -607,11 +940,23 @@ export function persistWorkItemEvidence(
 
   const evidence = extractWorkItemEvidence(trace.prompt ?? '');
   const strong = evidence.references.filter((ref) => ref.confidence >= AUTO_LINK_CONFIDENCE);
-  if (!strong.length) return empty;
 
   // A dismissed prompt stays dismissed. Without this, "Group past traces"
   // would re-link everything the user had explicitly waved away.
   if (isTraceDismissed(trace.id)) return { status: 'dismissed', workItemIds: [] };
+
+  if (!strong.length) {
+    // No certainty, so propose rather than decide. Already-linked prompts are
+    // skipped: a suggestion for work that is already grouped is just noise.
+    const alreadyLinked = db.prepare('SELECT 1 FROM work_item_traces WHERE trace_id = ?').get(trace.id);
+    if (alreadyLinked) return empty;
+
+    const candidates = buildSuggestionCandidates(projectId, trace.prompt ?? '', evidence.references);
+    if (!candidates.length) return empty;
+
+    recordSuggestions(projectId, trace.id, candidates);
+    return { status: 'suggested', workItemIds: candidates.map((c) => c.workItemId) };
+  }
 
   const run = db.transaction(() => {
     const ids: string[] = [];
@@ -629,7 +974,12 @@ export function persistWorkItemEvidence(
           source: 'detected',
           confidence: evidence.confidence,
           extractorVersion: evidence.extractorVersion,
-          references: [{ type: reference.type, key: reference.key, url: reference.url }],
+          references: [{
+            type: reference.type,
+            key: reference.key,
+            url: reference.url,
+            sourceTraceId: trace.id,
+          }],
         }).id;
       } else {
         // A later prompt may carry a URL or a clearer intent than the first one did.
@@ -638,6 +988,7 @@ export function persistWorkItemEvidence(
           type: reference.type,
           key: reference.key,
           url: reference.url,
+          sourceTraceId: trace.id,
         });
         if (evidence.kind !== 'unknown') {
           db.prepare("UPDATE work_items SET kind = ? WHERE id = ? AND kind = 'unknown'")
@@ -665,7 +1016,10 @@ export function persistWorkItemEvidence(
  * Group traces that were captured before extraction existed, or before a
  * session was linked to its project. Safe to re-run: linking is idempotent.
  */
-export function backfillWorkItems(projectId?: string, limit = 5000): { scanned: number; linked: number } {
+export function backfillWorkItems(
+  projectId?: string,
+  limit = 5000,
+): { scanned: number; linked: number; suggested: number } {
   const rows = (projectId
     ? db.prepare(`
         SELECT t.id, t.session_id, t.prompt, s.project_id
@@ -681,13 +1035,16 @@ export function backfillWorkItems(projectId?: string, limit = 5000): { scanned: 
       `).all(limit)) as Array<{ id: string; session_id: string; prompt: string; project_id: string }>;
 
   let linked = 0;
+  let suggested = 0;
   for (const row of rows) {
     if (!row.prompt?.trim()) continue;
     const trace = { id: row.id, sessionId: row.session_id, prompt: row.prompt } as TraceEntry;
-    if (persistWorkItemEvidence(trace, row.project_id).status === 'linked') linked += 1;
+    const result = persistWorkItemEvidence(trace, row.project_id);
+    if (result.status === 'linked') linked += 1;
+    else if (result.status === 'suggested') suggested += 1;
   }
 
-  return { scanned: rows.length, linked };
+  return { scanned: rows.length, linked, suggested };
 }
 
 // ── Draft generation ──────────────────────────────────────────────────────────

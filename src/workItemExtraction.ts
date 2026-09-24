@@ -355,6 +355,83 @@ export function isWorkItemKind(value: unknown): value is WorkItemKind {
   return typeof value === 'string' && (WORK_ITEM_KINDS as readonly string[]).includes(value);
 }
 
+// ── Similarity ────────────────────────────────────────────────────────────────
+//
+// The confidence policy suggests a link when a prompt looks strongly like one
+// active item, and stays quiet when the only thing in common is a broad word
+// like "dashboard" or "API". That distinction is the whole design of this
+// section: score on distinctive tokens only, and refuse to score at all when
+// too few survive.
+
+/** Grammar words. Present in most prompts, so they carry no signal. */
+const STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'have', 'has', 'was', 'were',
+  'are', 'but', 'not', 'you', 'your', 'our', 'its', 'their', 'them', 'they', 'can', 'will',
+  'would', 'should', 'could', 'when', 'what', 'why', 'how', 'where', 'please',
+  'make', 'need', 'want', 'like', 'just', 'now', 'then', 'also', 'some', 'any', 'all', 'more',
+  'get', 'got', 'let', 'use', 'using', 'used', 'about', 'after', 'before', 'over', 'under',
+  'out', 'off', 'does', 'did', 'done', 'doing', 'been', 'being', 'there', 'here',
+  'than', 'only', 'very', 'much', 'many', 'still', 'again', 'back', 'one', 'two', 'new',
+]);
+
+/**
+ * Words that describe most of this product's surface. Two prompts both saying
+ * "dashboard" tells us nothing, which is exactly the case the design says to
+ * leave unlinked.
+ */
+const BROAD_TERMS = new Set([
+  'dashboard', 'api', 'apis', 'ui', 'ux', 'frontend', 'backend', 'server', 'client',
+  'page', 'pages', 'app', 'application', 'code', 'file', 'files', 'function', 'method',
+  'class', 'component', 'components', 'module', 'service', 'services', 'database', 'db',
+  'test', 'tests', 'testing', 'bug', 'bugs', 'fix', 'fixes', 'issue', 'issues', 'error',
+  'errors', 'feature', 'features', 'task', 'tasks', 'work', 'change', 'changes', 'update',
+  'updates', 'add', 'adding', 'remove', 'create', 'implement', 'support', 'project',
+  'repo', 'repository', 'branch', 'commit', 'pr', 'review', 'build', 'run', 'script',
+]);
+
+/** Shortest token worth comparing. Two-letter tokens match far too easily. */
+const MIN_TOKEN_LENGTH = 3;
+
+/** Below this many shared distinctive tokens, a score is noise. */
+const MIN_SHARED_TOKENS = 2;
+
+/** Overlap at or above this counts as the design's "strong similarity". */
+export const SIMILARITY_SUGGEST_MIN = 0.34;
+
+/**
+ * Reduce text to the tokens that actually distinguish it. Numbers survive, so
+ * a version or an id still counts, but grammar and product-wide nouns do not.
+ */
+export function distinctiveTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  if (typeof text !== 'string') return tokens;
+
+  for (const raw of text.toLowerCase().split(/[^a-z0-9_-]+/)) {
+    const token = raw.replace(/^[-_]+|[-_]+$/g, '');
+    if (token.length < MIN_TOKEN_LENGTH) continue;
+    if (STOP_WORDS.has(token) || BROAD_TERMS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+/**
+ * Overlap coefficient over distinctive tokens, in 0..1. Overlap rather than
+ * Jaccard because a short prompt fully contained in a long work item summary
+ * is a strong signal, and Jaccard would punish it for the length difference.
+ */
+export function similarityScore(a: string, b: string): number {
+  const left = distinctiveTokens(a);
+  const right = distinctiveTokens(b);
+  if (left.size < MIN_SHARED_TOKENS || right.size < MIN_SHARED_TOKENS) return 0;
+
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared += 1;
+  if (shared < MIN_SHARED_TOKENS) return 0;
+
+  return Number((shared / Math.min(left.size, right.size)).toFixed(4));
+}
+
 // ── Draft generation ──────────────────────────────────────────────────────────
 //
 // Builds a title, summary and acceptance criteria from the prompts already

@@ -88,7 +88,14 @@ export interface DashboardWorkItemSummary {
 export interface DashboardData {
   projects: DashboardProject[];
   totals: { projects: number; sessions: number; tokens: number; credits: number };
-  workItemTotals: { active: number; detected: number; completed: number; unlinkedPrompts: number };
+  workItemTotals: {
+    /** Everything not completed or archived. Detected items count as open. */
+    open: number;
+    active: number;
+    detected: number;
+    completed: number;
+    unlinkedPrompts: number;
+  };
   pagination: {
     page: number;
     pageSize: number;
@@ -108,7 +115,12 @@ export type WorkItemStatus =
   | 'archived';
 export type WorkItemSource = 'detected' | 'manual';
 export type WorkItemSummarySource = 'generated' | 'user';
-export type WorkItemLinkSource = 'detected' | 'manual';
+/**
+ * How a prompt came to sit under a work item. `suggested` is the one value
+ * that is not a link: it marks a prompt in the suggestion queue, which has not
+ * been grouped yet.
+ */
+export type WorkItemLinkSource = 'detected' | 'manual' | 'similarity' | 'suggested';
 
 export const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = [
   'detected', 'active', 'paused', 'blocked', 'completed', 'archived',
@@ -121,6 +133,8 @@ export interface WorkItemReference {
   type: TicketReferenceType;
   key: string;
   url: string | null;
+  /** The prompt this reference was first seen in, when it came from extraction. */
+  sourceTraceId?: string | null;
 }
 
 export interface WorkItemTraceSummary {
@@ -197,7 +211,7 @@ export interface WorkItemTraceLinkInput {
 }
 
 export interface WorkItemEvidenceResult {
-  status: 'linked' | 'uncategorized' | 'dismissed';
+  status: 'linked' | 'uncategorized' | 'dismissed' | 'suggested';
   workItemIds: string[];
 }
 
@@ -209,4 +223,103 @@ export const WORK_ITEM_DISMISS_REASONS: readonly WorkItemDismissReason[] = ['ign
 export interface DismissedTrace extends WorkItemTraceSummary {
   reason: WorkItemDismissReason;
   dismissedAt: string;
+}
+
+/** Why a medium-confidence link was proposed. */
+export type WorkItemSuggestionReason = 'reference' | 'similarity';
+
+export const WORK_ITEM_SUGGESTION_REASONS: readonly WorkItemSuggestionReason[] = [
+  'reference',
+  'similarity',
+];
+
+export type WorkItemSuggestionState = 'pending' | 'accepted' | 'rejected';
+
+export interface WorkItemSuggestion {
+  id: string;
+  projectId: string;
+  traceId: string;
+  workItemId: string;
+  workItemTitle: string;
+  workItemStatus: WorkItemStatus;
+  reason: WorkItemSuggestionReason;
+  detail: string | null;
+  confidence: number;
+  /** True when more than one active item matched, so the design asks rather than suggests. */
+  ambiguous: boolean;
+  state: WorkItemSuggestionState;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface SuggestedTrace extends WorkItemTraceSummary {
+  suggestions: WorkItemSuggestion[];
+}
+
+/** Productivity rollup for a single work item. */
+export interface WorkItemAnalytics {
+  id: string;
+  title: string;
+  kind: WorkItemKind;
+  status: WorkItemStatus;
+  promptCount: number;
+  sessionCount: number;
+  tokens: number;
+  credits: number;
+  activeMs: number;
+  firstPromptAt: string | null;
+  lastPromptAt: string | null;
+  completedAt: string | null;
+  /** First prompt to completion. Null until the item is completed. */
+  cycleTimeMs: number | null;
+  /** First to last prompt. Available whether or not the item is finished. */
+  elapsedMs: number | null;
+}
+
+export interface WorkItemGroupAnalytics {
+  key: string;
+  itemCount: number;
+  promptCount: number;
+  tokens: number;
+  credits: number;
+  /** Mean cycle time over completed items only. Null when none are completed. */
+  avgCycleTimeMs: number | null;
+}
+
+/** The design's success measures, computed from recorded activity. */
+export interface WorkItemSuccessMeasures {
+  tracesWithCandidate: number;
+  tracesTotal: number;
+  candidateRate: number;
+  autoLinksAccepted: number;
+  autoLinksTotal: number;
+  autoLinkAcceptanceRate: number;
+  suggestionsAccepted: number;
+  suggestionsDecided: number;
+  suggestionAcceptanceRate: number;
+  unlinkedPrompts: number;
+  unlinkedRate: number;
+  mergeSplitCorrections: number;
+  itemsCompleted: number;
+  itemsCompletedWithEvidence: number;
+  completionEvidenceRate: number;
+}
+
+export interface WorkItemAnalyticsReport {
+  projectId: string | null;
+  totals: {
+    itemCount: number;
+    activeCount: number;
+    completedCount: number;
+    promptCount: number;
+    tokens: number;
+    credits: number;
+    avgCycleTimeMs: number | null;
+    avgCreditsPerItem: number;
+  };
+  byKind: WorkItemGroupAnalytics[];
+  byStatus: WorkItemGroupAnalytics[];
+  topByCredits: WorkItemAnalytics[];
+  recentlyCompleted: WorkItemAnalytics[];
+  measures: WorkItemSuccessMeasures;
 }

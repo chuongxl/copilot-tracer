@@ -26,7 +26,7 @@ function check(name, fn) {
   }
 }
 
-const { extractWorkItemEvidence, deriveWorkItemSummary, generateWorkItemDraft, AUTO_LINK_CONFIDENCE } = await import('../dist/workItemExtraction.js');
+const { extractWorkItemEvidence, deriveWorkItemSummary, generateWorkItemDraft, AUTO_LINK_CONFIDENCE, similarityScore, distinctiveTokens, SIMILARITY_SUGGEST_MIN } = await import('../dist/workItemExtraction.js');
 
 const bare = (refs) => refs.map((r) => ({ type: r.type, key: r.key }));
 
@@ -337,8 +337,9 @@ const service = await import('../dist/workItemService.js').catch(() => null);
 if (!service) {
   console.error('\nwork item service not built yet; persistence checks skipped');
 } else {
-  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, applyWorkItemDraft, buildWorkItemDraft, mergeWorkItems, splitWorkItem, dismissTrace, restoreDismissedTrace, getDismissedTraces, getUncategorizedTraces } = service;
-  const { ensureProject, createSession, upsertTrace } = await import('../dist/db.js');
+  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, applyWorkItemDraft, buildWorkItemDraft, mergeWorkItems, splitWorkItem, dismissTrace, restoreDismissedTrace, getDismissedTraces, getUncategorizedTraces, acceptSuggestion, rejectSuggestion } = service;
+  const { getWorkItemAnalytics, getAnalyticsReport, getSuccessMeasures } = await import('../dist/workItemAnalytics.js');
+  const { ensureProject, createSession, upsertTrace, db } = await import('../dist/db.js');
 
   const projectId = ensureProject('/tmp/work-item-test-project');
   const otherProjectId = ensureProject('/tmp/work-item-other-project');
@@ -650,6 +651,251 @@ if (!service) {
     assert.ok(item, 'expected a detected work item');
     assert.equal(item.status, 'detected');
     assert.equal(item.source, 'detected');
+  });
+
+  console.log('similarity scoring');
+
+  check('broad product words alone score zero', () => {
+    // Both prompts are nothing but words that describe half this codebase.
+    assert.equal(similarityScore('fix the dashboard API', 'update the dashboard API code'), 0);
+  });
+
+  check('distinctive shared wording scores above the suggest threshold', () => {
+    const score = similarityScore(
+      'the websocket reconnect backoff keeps thrashing',
+      'websocket reconnect backoff loop thrashing on idle',
+    );
+    assert.ok(score >= SIMILARITY_SUGGEST_MIN, `expected a strong score, got ${score}`);
+  });
+
+  check('a single shared distinctive word is not enough', () => {
+    assert.equal(similarityScore('rewrite the tokenizer', 'tokenizer'), 0);
+  });
+
+  check('scoring never throws on junk input', () => {
+    assert.equal(similarityScore('', ''), 0);
+    assert.equal(similarityScore(null, undefined), 0);
+    assert.equal(similarityScore('a b c', '!!! ??? ***'), 0);
+  });
+
+  check('distinctive tokens drop stop words, broad terms and short tokens', () => {
+    const tokens = distinctiveTokens('Please fix the webhook retry in our dashboard API to be ok');
+    assert.ok(tokens.has('webhook'));
+    assert.ok(tokens.has('retry'));
+    assert.ok(!tokens.has('the'), 'stop word survived');
+    assert.ok(!tokens.has('dashboard'), 'broad term survived');
+    assert.ok(!tokens.has('ok'), 'short token survived');
+  });
+
+  console.log('suggestions');
+
+  const suggestionProjectId = ensureProject('/tmp/work-item-suggestion-project');
+  createSession('session-wi-sugg', suggestionProjectId);
+  let suggSeq = 0;
+  const makeSuggTrace = (prompt) => {
+    suggSeq += 1;
+    const entry = {
+      id: `sugg-trace-${suggSeq}`,
+      sessionId: 'session-wi-sugg',
+      dateTime: new Date(Date.now() - (600 - suggSeq) * 1000).toISOString(),
+      prompt,
+      tokens: { input: 20, output: 10, cached: 0, reasoning: 0, written: 0, total: 30 },
+      aiCredits: 1.5,
+      durationMs: 4000,
+      toolCalls: [],
+      skillCount: 0,
+      agentCount: 0,
+      mcpCount: 0,
+      status: 'done',
+    };
+    upsertTrace(entry);
+    return entry;
+  };
+
+  const anchor = makeSuggTrace('Fix SUGG-1: the websocket reconnect backoff thrashes on idle sockets');
+  persistWorkItemEvidence(anchor, suggestionProjectId);
+  const anchorItem = getWorkItems(suggestionProjectId).find((w) => w.title === 'SUGG-1');
+
+  check('a ticketless prompt that echoes an open item is suggested, not linked', () => {
+    const trace = makeSuggTrace('the websocket reconnect backoff still thrashes when sockets idle');
+    const result = persistWorkItemEvidence(trace, suggestionProjectId);
+
+    assert.equal(result.status, 'suggested');
+    assert.ok(result.workItemIds.includes(anchorItem.id));
+    // Suggested is emphatically not linked.
+    assert.equal(getWorkItem(anchorItem.id).traceCount, 1);
+
+    const inbox = getUncategorizedTraces(suggestionProjectId);
+    const row = inbox.find((t) => t.id === trace.id);
+    assert.ok(row, 'a suggested prompt stays in the inbox');
+    assert.equal(row.suggestions.length, 1);
+    assert.equal(row.suggestions[0].reason, 'similarity');
+    assert.equal(row.suggestions[0].workItemId, anchorItem.id);
+  });
+
+  check('accepting a suggestion links the prompt and records the decision', () => {
+    const inbox = getUncategorizedTraces(suggestionProjectId);
+    const row = inbox.find((t) => t.suggestions.length);
+    const suggestion = row.suggestions[0];
+
+    const accepted = acceptSuggestion(suggestion.id);
+    assert.equal(accepted.state, 'accepted');
+    assert.ok(accepted.decidedAt);
+
+    const detail = getWorkItem(suggestion.workItemId);
+    assert.ok(detail.traces.some((t) => t.id === row.id), 'accepting should link the prompt');
+    assert.ok(
+      !getUncategorizedTraces(suggestionProjectId).some((t) => t.id === row.id),
+      'an accepted prompt leaves the inbox',
+    );
+  });
+
+  check('a decided suggestion cannot be decided twice', () => {
+    const trace = makeSuggTrace('websocket reconnect backoff thrashing again on idle');
+    persistWorkItemEvidence(trace, suggestionProjectId);
+    const row = getUncategorizedTraces(suggestionProjectId).find((t) => t.id === trace.id);
+    const suggestion = row.suggestions[0];
+
+    assert.equal(rejectSuggestion(suggestion.id).state, 'rejected');
+    assert.throws(() => rejectSuggestion(suggestion.id), /already been accepted or rejected/);
+    assert.throws(() => acceptSuggestion(suggestion.id), /already been accepted or rejected/);
+  });
+
+  check('a rejected suggestion is not offered again', () => {
+    const rejectedTrace = getUncategorizedTraces(suggestionProjectId)
+      .find((t) => t.prompt.includes('thrashing again'));
+    assert.ok(rejectedTrace, 'the prompt stays in the inbox after rejection');
+    assert.equal(rejectedTrace.suggestions.length, 0);
+
+    // Re-running extraction must not resurrect the rejected proposal.
+    persistWorkItemEvidence(
+      { id: rejectedTrace.id, sessionId: rejectedTrace.sessionId, prompt: rejectedTrace.prompt },
+      suggestionProjectId,
+    );
+    const again = getUncategorizedTraces(suggestionProjectId).find((t) => t.id === rejectedTrace.id);
+    assert.equal(again.suggestions.length, 0);
+  });
+
+  check('a dismissed prompt is never suggested', () => {
+    const trace = makeSuggTrace('websocket reconnect backoff idle thrash question');
+    dismissTrace(suggestionProjectId, trace.id, 'unrelated');
+    const result = persistWorkItemEvidence(trace, suggestionProjectId);
+    assert.equal(result.status, 'dismissed');
+  });
+
+  check('suggestions never cross a project boundary', () => {
+    const elsewhere = ensureProject('/tmp/work-item-suggestion-other');
+    createSession('session-wi-sugg-other', elsewhere);
+    upsertTrace({
+      id: 'sugg-trace-foreign',
+      sessionId: 'session-wi-sugg-other',
+      dateTime: new Date().toISOString(),
+      prompt: 'the websocket reconnect backoff thrashes on idle sockets',
+      tokens: { input: 1, output: 1, cached: 0, reasoning: 0, written: 0, total: 2 },
+      aiCredits: 0.1,
+      durationMs: 100,
+      toolCalls: [],
+      skillCount: 0,
+      agentCount: 0,
+      mcpCount: 0,
+      status: 'done',
+    });
+
+    const result = persistWorkItemEvidence(
+      { id: 'sugg-trace-foreign', sessionId: 'session-wi-sugg-other', prompt: 'the websocket reconnect backoff thrashes on idle sockets' },
+      elsewhere,
+    );
+    assert.equal(result.status, 'uncategorized');
+  });
+
+  console.log('productivity analytics');
+
+  check('per-item analytics aggregate prompts, tokens and credits', () => {
+    const rows = getWorkItemAnalytics(suggestionProjectId);
+    const item = rows.find((r) => r.id === anchorItem.id);
+    assert.ok(item, 'expected analytics for the anchor item');
+    assert.equal(item.promptCount, 2);
+    assert.equal(item.tokens, 60);
+    assert.equal(item.credits, 3);
+    assert.equal(item.sessionCount, 1);
+    assert.ok(item.elapsedMs >= 0, 'elapsed time should be known');
+  });
+
+  check('cycle time is null until an item is completed, then measured', () => {
+    const before = getWorkItemAnalytics(suggestionProjectId).find((r) => r.id === anchorItem.id);
+    assert.equal(before.cycleTimeMs, null);
+    assert.equal(before.completedAt, null);
+
+    updateWorkItem(anchorItem.id, { status: 'completed', confirmCompletion: true });
+
+    const after = getWorkItemAnalytics(suggestionProjectId).find((r) => r.id === anchorItem.id);
+    assert.ok(after.completedAt, 'completion should be recorded in the history');
+    assert.ok(typeof after.cycleTimeMs === 'number' && after.cycleTimeMs > 0);
+  });
+
+  check('a completion recorded before the first prompt reports no cycle time', () => {
+    // Backfilled or clock-skewed data would otherwise yield a negative
+    // duration, which is worse than admitting the number is unknown.
+    const skewed = createWorkItem({ projectId: suggestionProjectId, title: 'Clock skew' });
+    const trace = makeSuggTrace('unique quantum flux capacitor recalibration notes');
+    linkTraceToWorkItem({ workItemId: skewed.id, traceId: trace.id, linkSource: 'manual' });
+
+    db.prepare(
+      "UPDATE work_item_status_history SET changed_at = '1999-01-01T00:00:00.000Z' WHERE work_item_id = ?",
+    ).run(skewed.id);
+    db.prepare(
+      "INSERT INTO work_item_status_history (work_item_id, from_status, to_status, changed_at) VALUES (?, 'active', 'completed', '1999-01-02T00:00:00.000Z')",
+    ).run(skewed.id);
+
+    const row = getWorkItemAnalytics(suggestionProjectId).find((r) => r.id === skewed.id);
+    assert.ok(row.completedAt, 'the completion event still exists');
+    assert.equal(row.cycleTimeMs, null, 'a negative duration must read as unknown');
+  });
+
+  check('an unfinished item never reports a cycle time', () => {
+    const open = createWorkItem({ projectId: suggestionProjectId, title: 'Still open' });
+    const row = getWorkItemAnalytics(suggestionProjectId).find((r) => r.id === open.id);
+    assert.equal(row.cycleTimeMs, null);
+    assert.equal(row.promptCount, 0);
+    assert.equal(row.elapsedMs, null);
+  });
+
+  check('the report groups by kind and status without inflating sums', () => {
+    const report = getAnalyticsReport(suggestionProjectId);
+    const itemTotal = getWorkItemAnalytics(suggestionProjectId)
+      .reduce((sum, r) => sum + r.credits, 0);
+
+    assert.equal(report.totals.itemCount, getWorkItems(suggestionProjectId).length);
+    assert.ok(Math.abs(report.totals.credits - itemTotal) < 0.001);
+
+    const byStatusTotal = report.byStatus.reduce((sum, g) => sum + g.itemCount, 0);
+    assert.equal(byStatusTotal, report.totals.itemCount);
+    const byKindTotal = report.byKind.reduce((sum, g) => sum + g.itemCount, 0);
+    assert.equal(byKindTotal, report.totals.itemCount);
+  });
+
+  check('success measures count decided suggestions and corrections', () => {
+    const m = getSuccessMeasures(suggestionProjectId);
+    assert.ok(m.suggestionsDecided >= 2, 'one accepted and one rejected at minimum');
+    assert.ok(m.suggestionsAccepted >= 1);
+    assert.ok(m.suggestionAcceptanceRate > 0 && m.suggestionAcceptanceRate <= 1);
+    assert.ok(m.tracesTotal > 0);
+    assert.ok(m.candidateRate >= 0 && m.candidateRate <= 1);
+    assert.ok(m.unlinkedRate >= 0 && m.unlinkedRate <= 1);
+  });
+
+  check('measures are scoped to their project', () => {
+    const scoped = getSuccessMeasures(suggestionProjectId);
+    const global = getSuccessMeasures(null);
+    assert.ok(global.tracesTotal > scoped.tracesTotal, 'the global view sees more prompts');
+  });
+
+  check('a merge is counted as a correction', () => {
+    const before = getSuccessMeasures(suggestionProjectId).mergeSplitCorrections;
+    const keep = createWorkItem({ projectId: suggestionProjectId, title: 'Merge target' });
+    const fold = createWorkItem({ projectId: suggestionProjectId, title: 'Merge source' });
+    mergeWorkItems(keep.id, [fold.id]);
+    assert.equal(getSuccessMeasures(suggestionProjectId).mergeSplitCorrections, before + 1);
   });
 }
 

@@ -112,10 +112,51 @@ db.exec(`
     dismissed_at TEXT NOT NULL
   );
 
+  -- Medium-confidence links the engineer has not accepted yet. A suggestion is
+  -- never a link: it only becomes one when accepted, which is what makes the
+  -- design's "suggested links accepted" measure countable.
+  CREATE TABLE IF NOT EXISTS work_item_suggestions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    trace_id TEXT NOT NULL REFERENCES traces(id),
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    detail TEXT,
+    confidence REAL NOT NULL DEFAULT 0,
+    ambiguous INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE (trace_id, work_item_id)
+  );
+
+  -- Status transitions, so cycle time is measured from recorded events rather
+  -- than inferred from updated_at, which any edit overwrites.
+  CREATE TABLE IF NOT EXISTS work_item_status_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    changed_at TEXT NOT NULL
+  );
+
+  -- Merge, split and unlink events, so the design's correction rate is a count
+  -- of what actually happened rather than a guess from current state.
+  CREATE TABLE IF NOT EXISTS work_item_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_work_items_project ON work_items(project_id);
   CREATE INDEX IF NOT EXISTS idx_work_item_traces_trace ON work_item_traces(trace_id);
   CREATE INDEX IF NOT EXISTS idx_work_item_refs_lookup ON work_item_references(reference_type, reference_key);
   CREATE INDEX IF NOT EXISTS idx_work_item_dismissed_project ON work_item_dismissed_traces(project_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_suggestions_project ON work_item_suggestions(project_id, state);
+  CREATE INDEX IF NOT EXISTS idx_work_item_suggestions_trace ON work_item_suggestions(trace_id);
+  CREATE INDEX IF NOT EXISTS idx_work_item_status_history_item ON work_item_status_history(work_item_id, changed_at);
+  CREATE INDEX IF NOT EXISTS idx_work_item_corrections_project ON work_item_corrections(project_id);
 `);
 
 // Migrate existing DBs
@@ -131,6 +172,18 @@ try { db.prepare('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES pro
 // The status vocabulary gained detected/paused/blocked and renamed done to
 // completed, so existing rows carry the old spelling forward.
 try { db.prepare("UPDATE work_items SET status = 'completed' WHERE status = 'done'").run(); } catch {}
+// Which prompt first produced a reference, and how a trace relates to its item.
+try { db.prepare('ALTER TABLE work_item_references ADD COLUMN source_trace_id TEXT REFERENCES traces(id)').run(); } catch {}
+try { db.prepare("ALTER TABLE work_item_traces ADD COLUMN relationship TEXT NOT NULL DEFAULT 'work'").run(); } catch {}
+// Items that predate the history table get one synthetic row, so cycle-time
+// queries do not silently skip them.
+try {
+  db.prepare(`
+    INSERT INTO work_item_status_history (work_item_id, from_status, to_status, changed_at)
+    SELECT id, NULL, status, created_at FROM work_items
+    WHERE id NOT IN (SELECT work_item_id FROM work_item_status_history)
+  `).run();
+} catch {}
 
 // Exposed so companion modules (work items) can query without opening a second
 // connection to the same file.
@@ -315,6 +368,7 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
 
   const workItemTotals = db.prepare(`
     SELECT
+      COALESCE(SUM(status NOT IN ('completed', 'archived')), 0) as open,
       COALESCE(SUM(status = 'active'), 0) as active,
       COALESCE(SUM(status = 'detected'), 0) as detected,
       COALESCE(SUM(status = 'completed'), 0) as completed
@@ -339,6 +393,7 @@ export function getDashboard(page = 1, pageSize = 12): DashboardData {
       credits: totals.credits,
     },
     workItemTotals: {
+      open: workItemTotals.open,
       active: workItemTotals.active,
       detected: workItemTotals.detected,
       completed: workItemTotals.completed,

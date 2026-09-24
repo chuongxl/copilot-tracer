@@ -185,7 +185,10 @@ quality and the decision not to add similarity scoring or AI enrichment are in
 which fails if precision drops below 95% or if any sensitive-looking value is
 read as a ticket. `npm run demo:work-items` boots a seeded throwaway daemon for
 manual clicking; a browser walkthrough with screenshots is in
-`docs/screenshot/work-items/`.
+`docs/screenshot/work-items/`, with the suggestion tier in
+`docs/screenshot/suggestions/` and the analytics tab in
+`docs/screenshot/analytics/`. How the suggestion thresholds and the analytics
+measures were chosen is written up in `docs/work-items-phase-5-7.md`.
 
 ### Workspace
 
@@ -213,7 +216,29 @@ no checkout on this machine, so they report an explicit evidence error instead
 of silently showing nothing.
 
 **Inbox tab.** Prompts in the project that no work item has claimed. Attach one
-to an existing item or spin up a new item from it.
+to an existing item or spin up a new item from it, or dismiss it as not work.
+
+**Suggestions.** When a prompt carries no ticket key but reads like an open
+item, the inbox shows a suggested match inline with Accept and No buttons. A
+suggestion is never a link. Nothing moves until you click. Matching runs on
+distinctive words only: "dashboard", "api", "test", "bug" and friends are
+stripped first, so "fix the dashboard API" and "update the dashboard API code"
+score zero against each other instead of collapsing into one item. When more
+than one item could match, all candidates are flagged ambiguous and the prompt
+asks you to pick. Accepting one rejects the rest for that prompt.
+
+**Productivity tab.** Totals for the project, then the most expensive work,
+what was recently completed, and breakdowns by kind and by status. Cycle time
+is measured from `work_item_status_history`, not `updated_at`, so editing a
+title does not reset the clock. A dash means no data, which is deliberate:
+"nothing completed yet" and "completed instantly" must not look alike.
+
+The Grouping quality panel at the bottom carries the six measures the design
+says to watch before adding more automation: how many prompts got a candidate,
+how many auto-links survived, what share of suggestions you accepted, what is
+still unlinked, how many merges and splits you had to make, and how many
+completions had real evidence. `GET /api/analytics` returns the same numbers
+across every project.
 
 **Group past traces.** Runs the backfill over existing history. Needed once
 after upgrading, since extraction only fires on newly captured traces.

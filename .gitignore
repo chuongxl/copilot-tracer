@@ -6,3 +6,5 @@ graft/
 .worktrees/
 
 artifacts/
+
+.playwright-mcp/

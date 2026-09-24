@@ -4,3 +4,7 @@ export const WORK_ITEM_STATUSES = [
 /** Statuses that mean the work is no longer being carried out. */
 export const WORK_ITEM_CLOSED_STATUSES = ['completed', 'archived'];
 export const WORK_ITEM_DISMISS_REASONS = ['ignored', 'unrelated'];
+export const WORK_ITEM_SUGGESTION_REASONS = [
+    'reference',
+    'similarity',
+];

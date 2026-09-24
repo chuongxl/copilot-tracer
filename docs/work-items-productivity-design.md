@@ -208,15 +208,19 @@ Completion must require strong evidence such as a successful verification comman
 
 ## Delivery phases
 
-1. Deterministic ticket and URL extraction.
-2. Work-item schema, APIs, and manual grouping.
-3. Dashboard and project workspace.
-4. Editable summaries and deterministic work-kind classification.
-5. Similarity suggestions and uncategorized inbox.
-6. Git and PR evidence for progress and completion.
-7. Productivity analytics based on confirmed work items.
+1. Deterministic ticket and URL extraction. Delivered.
+2. Work-item schema, APIs, and manual grouping. Delivered.
+3. Dashboard and project workspace. Delivered.
+4. Editable summaries and deterministic work-kind classification. Delivered.
+5. Similarity suggestions and uncategorized inbox. Delivered.
+6. Git and PR evidence for progress and completion. Delivered.
+7. Productivity analytics based on confirmed work items. Delivered.
 
 Each phase must ship a useful, testable product without requiring the next phase.
+
+All seven are built. Phases 5 and 7 landed last; the threshold choices, the
+broad-word rule, and what stays deferred are written up in
+`docs/work-items-phase-5-7.md`.
 
 ## Success measures
 

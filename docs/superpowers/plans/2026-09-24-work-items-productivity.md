@@ -598,7 +598,7 @@ Before opening each pull request:
 - [x] Dedicated feature branch is used. `feature/work-items-productivity`.
 - [x] `npx tsc --noEmit` passes.
 - [x] `git diff --check` passes.
-- [x] Isolated verifier passes. 64 unit, 42 end-to-end, 24 evaluation fixtures.
+- [x] Isolated verifier passes. 86 unit, 52 end-to-end, 24 evaluation fixtures.
 - [x] Existing dashboard and live-tracer routes still load. `/index.html`, `/api/dashboard` and `/api/traces` all return 200 from a fresh daemon.
 - [x] Raw trace payloads remain unchanged. Work items live in three new tables and link by trace id.
 - [x] Duplicate extraction is idempotent. Asserted in both scripts.

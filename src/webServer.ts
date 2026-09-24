@@ -6,13 +6,16 @@ import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
 import {
+  acceptSuggestion,
   applyWorkItemDraft,
   CompletionNotConfirmedError,
   dismissTrace,
   getDismissedTraces,
   mergeWorkItems,
   refreshWorkItemEvidence,
+  rejectSuggestion,
   restoreDismissedTrace,
+  SuggestionAlreadyDecidedError,
   splitWorkItem,
   WorkItemMergeError,
   WorkItemProjectMismatchError,
@@ -29,6 +32,7 @@ import {
   unlinkTraceFromWorkItem,
   updateWorkItem,
 } from './workItemService.js';
+import { getAnalyticsReport } from './workItemAnalytics.js';
 import { isWorkItemKind } from './workItemExtraction.js';
 import { WORK_ITEM_DISMISS_REASONS, WORK_ITEM_STATUSES } from './types.js';
 import type { WorkItemDismissReason, WorkItemKind, WorkItemStatus } from './types.js';
@@ -238,6 +242,60 @@ ${prompt.trim()}`;
       return;
     }
     res.json(backfillWorkItems(req.params.id));
+  });
+
+  // ── Suggestions ────────────────────────────────────────────────────────────
+
+  app.post('/api/suggestions/:id/accept', (req, res) => {
+    try {
+      const accepted = acceptSuggestion(req.params.id);
+      if (!accepted) {
+        res.status(404).json({ error: 'suggestion not found' });
+        return;
+      }
+      res.json(accepted);
+    } catch (error) {
+      if (error instanceof SuggestionAlreadyDecidedError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      if (error instanceof WorkItemProjectMismatchError) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  app.post('/api/suggestions/:id/reject', (req, res) => {
+    try {
+      const rejected = rejectSuggestion(req.params.id);
+      if (!rejected) {
+        res.status(404).json({ error: 'suggestion not found' });
+        return;
+      }
+      res.json(rejected);
+    } catch (error) {
+      if (error instanceof SuggestionAlreadyDecidedError) {
+        res.status(409).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  // ── Productivity analytics ─────────────────────────────────────────────────
+
+  app.get('/api/projects/:id/analytics', (req, res) => {
+    if (!projectExists(req.params.id)) {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    res.json(getAnalyticsReport(req.params.id));
+  });
+
+  app.get('/api/analytics', (_req, res) => {
+    res.json(getAnalyticsReport(null));
   });
 
   app.get('/api/work-items/:id', (req, res) => {

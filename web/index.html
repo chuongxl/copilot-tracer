@@ -340,7 +340,38 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
   .tag-ref { background: #f0883e26; color: #f0883e; font-family: ui-monospace, monospace; text-transform: none; }
 
   .inbox-row { align-items: center; background: #161b22; border: 1px solid #30363d; border-radius: 8px; display: flex; gap: 12px; padding: 12px 14px; }
+  .inbox-row-suggested { border-color: #1f6feb55; }
+  .inbox-main { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 0; }
   .inbox-prompt { color: #c9d1d9; flex: 1; font-size: 12px; line-height: 1.5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wi-suggestions { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+  .wi-suggestion-lead { color: #58a6ff; font-size: 11px; }
+  .wi-suggestions-ambiguous .wi-suggestion-lead { color: #d29922; }
+  .wi-suggestion { align-items: center; background: #0d1117; border: 1px solid #30363d; border-radius: 12px; display: inline-flex; gap: 6px; padding: 2px 4px 2px 10px; }
+  .wi-suggestion-title { color: #c9d1d9; font-size: 11px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wi-suggestion-btn { background: #21262d; border: 1px solid #30363d; border-radius: 10px; color: #8b949e; cursor: pointer; font-size: 10px; padding: 1px 7px; }
+  .wi-suggestion-btn:hover { color: #c9d1d9; }
+  .wi-suggestion-yes { border-color: #238636; color: #3fb950; }
+  .an-totals { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin-bottom: 16px; }
+  .an-total { background: #161b22; border: 1px solid #30363d; border-radius: 8px; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; }
+  .an-total-value { color: #58a6ff; font-size: 20px; font-weight: 600; }
+  .an-total-label { color: #8b949e; font-size: 11px; }
+  .an-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); margin-bottom: 12px; }
+  .an-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow-x: auto; padding: 14px 16px; }
+  .an-card h4 { color: #c9d1d9; font-size: 13px; margin: 0 0 10px; }
+  .an-note { color: #8b949e; font-size: 11px; margin: -4px 0 10px; }
+  .an-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  .an-table th { border-bottom: 1px solid #30363d; color: #8b949e; font-weight: 500; padding: 4px 6px; text-align: right; }
+  .an-table th:first-child { text-align: left; }
+  .an-table td { border-bottom: 1px solid #21262d; color: #c9d1d9; padding: 5px 6px; text-align: right; }
+  .an-table td:first-child { text-align: left; }
+  .an-item-title { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .an-item-title a { color: #58a6ff; text-decoration: none; }
+  .an-item-title a:hover { text-decoration: underline; }
+  .an-measures { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .an-measure { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; }
+  .an-measure-label { color: #8b949e; font-size: 11px; }
+  .an-measure-value { color: #c9d1d9; font-size: 17px; font-weight: 600; }
+  .an-measure-detail { color: #6e7681; font-size: 10px; }
   .inbox-time { color: #8b949e; font-size: 11px; white-space: nowrap; }
   .inbox-actions { display: flex; gap: 6px; }
 
@@ -413,6 +444,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     <div class="ws-tabs" role="tablist">
       <button type="button" class="ws-tab active" id="ws-tab-work-items" role="tab" onclick="showWorkspaceTab('work-items')">Work items</button>
       <button type="button" class="ws-tab" id="ws-tab-inbox" role="tab" onclick="showWorkspaceTab('inbox')">Inbox</button>
+      <button type="button" class="ws-tab" id="ws-tab-analytics" role="tab" onclick="showWorkspaceTab('analytics')">Productivity</button>
     </div>
 
     <div class="ws-panel active" id="ws-panel-work-items" role="tabpanel" aria-labelledby="ws-tab-work-items">
@@ -439,6 +471,10 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       </div>
       <div class="wi-list" id="inbox-list"></div>
       <div id="inbox-dismissed"></div>
+    </div>
+
+    <div class="ws-panel" id="ws-panel-analytics" role="tabpanel" aria-labelledby="ws-tab-analytics">
+      <div id="analytics-body"><div class="ws-empty">Loading…</div></div>
     </div>
   </div>
 
@@ -639,8 +675,8 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
         <div class="dash-total-value credits">${fmtCredits(data.totals.credits)}</div>
       </div>
       <div class="dash-total-card">
-        <div class="dash-total-label">Active Work Items</div>
-        <div class="dash-total-value sessions">${(data.workItemTotals?.active ?? 0).toLocaleString()}</div>
+        <div class="dash-total-label">Open Work Items</div>
+        <div class="dash-total-value sessions">${(data.workItemTotals?.open ?? 0).toLocaleString()}</div>
       </div>
       <div class="dash-total-card">
         <div class="dash-total-label">Unlinked Prompts</div>
@@ -674,7 +710,7 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
             <div class="dash-wi-counts">
               <span title="Active work items">${wi.active} active</span>
               ${wi.detected ? `<span class="dash-wi-detected" title="Detected, not yet confirmed">${wi.detected} detected</span>` : ''}
-              ${wi.completed ? `<span title="Completed">${wi.completed} done</span>` : ''}
+              ${wi.completed ? `<span title="Completed">${wi.completed} completed</span>` : ''}
               ${wi.ticketReferences ? `<span title="Distinct ticket references">${wi.ticketReferences} ticket${wi.ticketReferences === 1 ? '' : 's'}</span>` : ''}
               ${wi.unlinkedPrompts ? `<span class="dash-wi-unlinked" title="Prompts not yet grouped">${wi.unlinkedPrompts} unlinked</span>` : ''}
             </div>
@@ -793,7 +829,137 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     if (panelEl) panelEl.classList.add('active');
 
     if (tab === 'work-items') loadWorkItems();
+    else if (tab === 'analytics') loadAnalytics();
     else loadInbox();
+  }
+
+  // ── Productivity analytics ─────────────────────
+
+  /**
+   * Work item spans, which run to hours and days. Deliberately not
+   * fmtDuration: that one formats a single trace in milliseconds and seconds,
+   * and the two would otherwise collide in this one shared script.
+   */
+  function fmtSpan(ms) {
+    if (ms === null || ms === undefined) return '—';
+    const minutes = Math.round(ms / 60000);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = minutes / 60;
+    if (hours < 24) return `${hours.toFixed(1)}h`;
+    return `${(hours / 24).toFixed(1)}d`;
+  }
+
+  function fmtPercent(value) {
+    return `${Math.round((value || 0) * 100)}%`;
+  }
+
+  function measureRow(label, value, detail, hint) {
+    return `<div class="an-measure" title="${escHtml(hint || '')}">
+      <span class="an-measure-label">${escHtml(label)}</span>
+      <span class="an-measure-value">${escHtml(value)}</span>
+      <span class="an-measure-detail">${escHtml(detail)}</span>
+    </div>`;
+  }
+
+  function groupTable(title, rows, emptyText) {
+    if (!rows.length) return `<div class="an-card"><h4>${escHtml(title)}</h4><div class="ws-empty">${escHtml(emptyText)}</div></div>`;
+    return `<div class="an-card">
+      <h4>${escHtml(title)}</h4>
+      <table class="an-table">
+        <thead><tr><th></th><th>Items</th><th>Prompts</th><th>Credits</th><th>Avg cycle</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td>${escHtml(r.key)}</td>
+            <td>${r.itemCount}</td>
+            <td>${r.promptCount}</td>
+            <td>${r.credits.toFixed(2)}</td>
+            <td>${fmtSpan(r.avgCycleTimeMs)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function itemTable(title, items, emptyText, timeColumn) {
+    if (!items.length) return `<div class="an-card"><h4>${escHtml(title)}</h4><div class="ws-empty">${escHtml(emptyText)}</div></div>`;
+    return `<div class="an-card">
+      <h4>${escHtml(title)}</h4>
+      <table class="an-table">
+        <thead><tr><th>Work item</th><th>Prompts</th><th>Tokens</th><th>Credits</th><th>${escHtml(timeColumn)}</th></tr></thead>
+        <tbody>${items.map(i => `
+          <tr>
+            <td class="an-item-title" title="${escHtml(i.title)}">
+              <a href="#" onclick="openWorkItem('${escHtml(i.id)}'); return false;">${escHtml(truncate(i.title, 48))}</a>
+            </td>
+            <td>${i.promptCount}</td>
+            <td>${i.tokens.toLocaleString()}</td>
+            <td>${i.credits.toFixed(2)}</td>
+            <td>${fmtSpan(timeColumn === 'Cycle time' ? i.cycleTimeMs : i.elapsedMs)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  }
+
+  async function loadAnalytics() {
+    if (!workspaceProjectId) return;
+    const body = document.getElementById('analytics-body');
+    body.innerHTML = '<div class="ws-empty">Loading…</div>';
+
+    try {
+      const report = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/analytics`);
+      const t = report.totals;
+      const m = report.measures;
+
+      if (!t.itemCount) {
+        body.innerHTML = '<div class="ws-empty">No work items yet. Group some prompts first and the numbers will appear here.</div>';
+        return;
+      }
+
+      body.innerHTML = `
+        <div class="an-totals">
+          <div class="an-total"><span class="an-total-value">${t.itemCount}</span><span class="an-total-label">Work items</span></div>
+          <div class="an-total"><span class="an-total-value">${t.activeCount}</span><span class="an-total-label">Open</span></div>
+          <div class="an-total"><span class="an-total-value">${t.completedCount}</span><span class="an-total-label">Completed</span></div>
+          <div class="an-total"><span class="an-total-value">${t.promptCount}</span><span class="an-total-label">Prompts</span></div>
+          <div class="an-total"><span class="an-total-value">${t.credits.toFixed(2)}</span><span class="an-total-label">Credits</span></div>
+          <div class="an-total"><span class="an-total-value">${t.avgCreditsPerItem.toFixed(2)}</span><span class="an-total-label">Credits / item</span></div>
+          <div class="an-total"><span class="an-total-value">${fmtSpan(t.avgCycleTimeMs)}</span><span class="an-total-label">Avg cycle time</span></div>
+        </div>
+
+        <div class="an-grid">
+          ${itemTable('Most expensive work', report.topByCredits, 'Nothing recorded yet.', 'Elapsed')}
+          ${itemTable('Recently completed', report.recentlyCompleted, 'No completed work items yet.', 'Cycle time')}
+          ${groupTable('By kind', report.byKind, 'Nothing recorded yet.')}
+          ${groupTable('By status', report.byStatus, 'Nothing recorded yet.')}
+        </div>
+
+        <div class="an-card">
+          <h4>Grouping quality</h4>
+          <p class="an-note">The design says to watch these before adding more automation.</p>
+          <div class="an-measures">
+            ${measureRow('Prompts with a candidate', fmtPercent(m.candidateRate),
+              `${m.tracesWithCandidate} of ${m.tracesTotal}`,
+              'Prompts that were either grouped automatically or got a suggestion.')}
+            ${measureRow('Auto-links kept', fmtPercent(m.autoLinkAcceptanceRate),
+              `${m.autoLinksAccepted} of ${m.autoLinksTotal}`,
+              'Automatic links the engineer did not unlink.')}
+            ${measureRow('Suggestions accepted', fmtPercent(m.suggestionAcceptanceRate),
+              `${m.suggestionsAccepted} of ${m.suggestionsDecided} decided`,
+              'How often a suggested match turned out to be right.')}
+            ${measureRow('Prompts still unlinked', fmtPercent(m.unlinkedRate),
+              `${m.unlinkedPrompts} of ${m.tracesTotal}`,
+              'Neither grouped nor dismissed. Lower is better.')}
+            ${measureRow('Merge and split corrections', String(m.mergeSplitCorrections),
+              'since the first prompt',
+              'How often grouping had to be fixed by hand.')}
+            ${measureRow('Completions with evidence', fmtPercent(m.completionEvidenceRate),
+              `${m.itemsCompletedWithEvidence} of ${m.itemsCompleted}`,
+              'Completed items backed by Git evidence or a written note.')}
+          </div>
+        </div>`;
+    } catch (e) {
+      body.innerHTML = '';
+      showWorkspaceError(e.message);
+    }
   }
 
   function openLiveForCurrentProject() {
@@ -903,7 +1069,9 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
 
     try {
       const traces = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/uncategorized-traces?limit=100`);
-      statusEl.textContent = `${traces.length} ungrouped prompt${traces.length === 1 ? '' : 's'}`;
+      const suggestedCount = traces.filter(t => (t.suggestions || []).length).length;
+      statusEl.textContent = `${traces.length} ungrouped prompt${traces.length === 1 ? '' : 's'}`
+        + (suggestedCount ? `, ${suggestedCount} with a suggested match` : '');
       loadDismissed();
 
       if (!traces.length) {
@@ -912,8 +1080,11 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       }
 
       listEl.innerHTML = traces.map(t => `
-        <div class="inbox-row" data-trace="${escHtml(t.id)}">
-          <span class="inbox-prompt" title="${escHtml(t.prompt)}">${escHtml(truncate(t.prompt.replace(/\s+/g, ' '), 140))}</span>
+        <div class="inbox-row${(t.suggestions || []).length ? ' inbox-row-suggested' : ''}" data-trace="${escHtml(t.id)}">
+          <div class="inbox-main">
+            <span class="inbox-prompt" title="${escHtml(t.prompt)}">${escHtml(truncate(t.prompt.replace(/\s+/g, ' '), 140))}</span>
+            ${renderSuggestions(t.suggestions || [])}
+          </div>
           <span class="inbox-time">${fmtDateTime(t.dateTime)}</span>
           <div class="inbox-actions">
             <button type="button" class="ws-btn" onclick="attachTrace('${escHtml(t.id)}')">Attach</button>
@@ -925,6 +1096,40 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     } catch (e) {
       listEl.innerHTML = '';
       statusEl.textContent = '';
+      showWorkspaceError(e.message);
+    }
+  }
+
+  function renderSuggestions(suggestions) {
+    if (!suggestions.length) return '';
+
+    // The design distinguishes one clear match from several plausible ones.
+    // Saying so up front stops a list of guesses reading as a confident answer.
+    const ambiguous = suggestions.some(s => s.ambiguous);
+    const lead = ambiguous
+      ? 'Several items could match. Pick one:'
+      : 'Suggested match:';
+
+    const chips = suggestions.map(s => `
+      <span class="wi-suggestion" title="${escHtml(s.detail || '')} · confidence ${(s.confidence * 100).toFixed(0)}%">
+        <span class="wi-suggestion-title">${escHtml(s.workItemTitle)}</span>
+        <button type="button" class="wi-suggestion-btn wi-suggestion-yes"
+          onclick="decideSuggestion('${escHtml(s.id)}', 'accept')">Accept</button>
+        <button type="button" class="wi-suggestion-btn"
+          onclick="decideSuggestion('${escHtml(s.id)}', 'reject')">No</button>
+      </span>`).join('');
+
+    return `<div class="wi-suggestions${ambiguous ? ' wi-suggestions-ambiguous' : ''}">
+      <span class="wi-suggestion-lead">${lead}</span>${chips}
+    </div>`;
+  }
+
+  async function decideSuggestion(suggestionId, decision) {
+    try {
+      await api('POST', `/api/suggestions/${encodeURIComponent(suggestionId)}/${decision}`);
+      await loadInbox();
+      if (decision === 'accept') loadWorkItems();
+    } catch (e) {
       showWorkspaceError(e.message);
     }
   }

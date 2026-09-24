@@ -69,6 +69,11 @@ const PROMPTS = [
   ['session-checkout-5', 'Explain how the order state machine decides when a payment is captured.'],
   ['session-checkout-5', 'Now show me where retries are handled.'],
   ['session-checkout-6', 'Why is the staging deploy taking eleven minutes?'],
+
+  // Ticketless prompts that echo work already under way. These carry no strong
+  // evidence, so they should be suggested rather than grouped outright.
+  ['session-checkout-7', 'the saved card list still renders after the order total on slow connections'],
+  ['session-checkout-7', 'quebec orders are applying QST twice when the tax line rounds'],
 ];
 
 // A second project that does have a checkout on this machine, so the git

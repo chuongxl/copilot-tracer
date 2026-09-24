@@ -169,7 +169,14 @@ async function main() {
     const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
     assert.equal(res.status, 200);
     assert.equal(res.body.traces.length, 2);
-    assert.deepEqual(res.body.references, [{ type: 'jira', key: 'ABC-123', url: null }]);
+    assert.equal(res.body.references.length, 1);
+    const [reference] = res.body.references;
+    assert.equal(reference.type, 'jira');
+    assert.equal(reference.key, 'ABC-123');
+    assert.equal(reference.url, null);
+    // The reference remembers which prompt first carried the ticket.
+    assert.ok(reference.sourceTraceId, 'reference should record its source trace');
+    assert.ok(res.body.traces.some((t) => t.id === reference.sourceTraceId));
     assert.ok(res.body.summary.includes('ABC-123'));
   });
 
@@ -532,6 +539,13 @@ async function main() {
     assert.ok(res.body.workItemTotals, 'workItemTotals missing from the dashboard');
     assert.equal(typeof res.body.workItemTotals.active, 'number');
     assert.equal(typeof res.body.workItemTotals.unlinkedPrompts, 'number');
+    // Detected items are open work. Counting only `active` made the headline
+    // tile read zero while four items sat waiting to be confirmed.
+    assert.equal(typeof res.body.workItemTotals.open, 'number');
+    assert.ok(
+      res.body.workItemTotals.open >= res.body.workItemTotals.detected,
+      'open must include detected items',
+    );
 
     const project = res.body.projects.find((p) => p.id === projectId);
     assert.ok(project, 'project missing from the dashboard');
@@ -622,6 +636,171 @@ async function main() {
     }
     assert.ok(html.includes("location.hash='#/project?project="), 'project card does not open the workspace');
     assert.ok(html.includes("'project'"), 'project route is not registered');
+  });
+
+  console.log('suggestions');
+
+  let suggestionId = null;
+  let suggestedTraceId = null;
+
+  await check('a ticketless echo of an open item becomes a suggestion, not a link', async () => {
+    await request('POST', `${base}/v1/traces`, otlpPayload({
+      sessionId: 'verify-session-sugg',
+      repoUrl,
+      prompt: 'Fix SUGGEST-1: the websocket reconnect backoff thrashes on idle sockets',
+      traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      spanId: 'aaaaaaaaaaaaaaaa',
+    }));
+    await request('POST', `${base}/v1/traces`, otlpPayload({
+      sessionId: 'verify-session-sugg',
+      repoUrl,
+      prompt: 'the websocket reconnect backoff still thrashes whenever sockets idle',
+      traceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      spanId: 'bbbbbbbbbbbbbbbb',
+    }));
+
+    const inbox = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`)).body;
+    const row = inbox.find((t) => t.prompt.includes('still thrashes'));
+    assert.ok(row, 'the echoing prompt should stay in the inbox');
+    assert.equal(row.suggestions.length, 1);
+    assert.equal(row.suggestions[0].reason, 'similarity');
+    assert.equal(row.linkSource, 'suggested');
+
+    suggestionId = row.suggestions[0].id;
+    suggestedTraceId = row.id;
+
+    const target = (await request('GET', `${base}/api/work-items/${encodeURIComponent(row.suggestions[0].workItemId)}`)).body;
+    assert.equal(target.traceCount, 1, 'a suggestion must not link anything on its own');
+  });
+
+  await check('accepting a suggestion links the prompt', async () => {
+    const res = await request('POST', `${base}/api/suggestions/${encodeURIComponent(suggestionId)}/accept`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.state, 'accepted');
+
+    const item = (await request('GET', `${base}/api/work-items/${encodeURIComponent(res.body.workItemId)}`)).body;
+    assert.ok(item.traces.some((t) => t.id === suggestedTraceId));
+
+    const inbox = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`)).body;
+    assert.ok(!inbox.some((t) => t.id === suggestedTraceId), 'an accepted prompt leaves the inbox');
+  });
+
+  await check('a decided suggestion returns 409 and an unknown one 404', async () => {
+    const again = await request('POST', `${base}/api/suggestions/${encodeURIComponent(suggestionId)}/accept`);
+    assert.equal(again.status, 409);
+
+    const rejected = await request('POST', `${base}/api/suggestions/${encodeURIComponent(suggestionId)}/reject`);
+    assert.equal(rejected.status, 409);
+
+    const missing = await request('POST', `${base}/api/suggestions/suggestion:nope/accept`);
+    assert.equal(missing.status, 404);
+  });
+
+  await check('rejecting a suggestion leaves the prompt in the inbox with no proposals', async () => {
+    await request('POST', `${base}/v1/traces`, otlpPayload({
+      sessionId: 'verify-session-sugg',
+      repoUrl,
+      prompt: 'websocket reconnect backoff thrashes on idle sockets once more',
+      traceId: 'cccccccccccccccccccccccccccccccc',
+      spanId: 'cccccccccccccccc',
+    }));
+
+    const inbox = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`)).body;
+    const row = inbox.find((t) => t.prompt.includes('once more'));
+    assert.ok(row?.suggestions.length, 'expected a fresh suggestion');
+
+    const res = await request('POST', `${base}/api/suggestions/${encodeURIComponent(row.suggestions[0].id)}/reject`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.state, 'rejected');
+
+    const after = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/uncategorized-traces`)).body;
+    const stillThere = after.find((t) => t.id === row.id);
+    assert.ok(stillThere, 'rejecting is not dismissing');
+    assert.equal(stillThere.suggestions.length, 0);
+  });
+
+  console.log('productivity analytics');
+
+  await check('reports project analytics with consistent totals', async () => {
+    const res = await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/analytics`);
+    assert.equal(res.status, 200);
+
+    const { totals, byKind, byStatus, measures } = res.body;
+    assert.ok(totals.itemCount > 0);
+    assert.equal(byKind.reduce((sum, g) => sum + g.itemCount, 0), totals.itemCount);
+    assert.equal(byStatus.reduce((sum, g) => sum + g.itemCount, 0), totals.itemCount);
+    assert.ok(totals.credits >= 0);
+    assert.ok(measures.tracesTotal > 0);
+    assert.ok(measures.suggestionsDecided >= 2, 'one accept and one reject were recorded');
+    assert.ok(measures.suggestionAcceptanceRate > 0);
+  });
+
+  await check('serves a global analytics report', async () => {
+    const res = await request('GET', `${base}/api/analytics`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.projectId, null);
+    assert.ok(res.body.totals.itemCount > 0);
+    assert.ok(Array.isArray(res.body.topByCredits));
+  });
+
+  await check('cycle time appears only after a confirmed completion', async () => {
+    const created = (await request('POST', `${base}/api/work-items`, {
+      projectId,
+      title: 'Cycle time check',
+    })).body;
+    await request('POST', `${base}/api/work-items/${encodeURIComponent(created.id)}/traces`, {
+      traceId: suggestedTraceId,
+    });
+
+    const before = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/analytics`)).body;
+    const openRow = before.topByCredits.concat(before.recentlyCompleted).find((r) => r.id === created.id);
+    if (openRow) assert.equal(openRow.cycleTimeMs, null);
+
+    await request('PATCH', `${base}/api/work-items/${encodeURIComponent(created.id)}`, {
+      status: 'completed',
+      confirmCompletion: true,
+    });
+
+    const after = (await request('GET', `${base}/api/projects/${encodeURIComponent(projectId)}/analytics`)).body;
+    const done = after.recentlyCompleted.find((r) => r.id === created.id);
+    assert.ok(done, 'a completed item should appear in recentlyCompleted');
+    assert.ok(done.completedAt, 'completion time comes from the status history');
+    assert.ok(after.totals.completedCount >= 1);
+  });
+
+  await check('the analytics tab and suggestion controls are served', async () => {
+    const res = await request('GET', `${base}/index.html`);
+    const html = res.body;
+    assert.ok(html.includes("showWorkspaceTab('analytics')"), 'analytics tab missing');
+    assert.ok(html.includes('an-measures'), 'success measures block missing');
+    assert.ok(html.includes('decideSuggestion'), 'suggestion accept and reject missing');
+    assert.ok(html.includes('wi-suggestions-ambiguous'), 'ambiguous suggestion styling missing');
+
+    // Work item spans and single-trace durations need different formatters.
+    // They shared a name once, and the trace one silently won, printing cycle
+    // times as "2192.0s".
+    assert.ok(html.includes('function fmtSpan(ms)'), 'work item span formatter missing');
+    assert.equal(
+      (html.match(/function fmtSpan\(/g) || []).length, 1,
+      'fmtSpan must be defined exactly once',
+    );
+    assert.equal(
+      (html.match(/function fmtDuration\(/g) || []).length, 1,
+      'fmtDuration must be defined exactly once',
+    );
+    assert.ok(!/fmtDuration\((?:t|r|i)\.(?:avgC|cycleT|elapsed)/.test(html),
+      'analytics must not call the trace duration formatter');
+  });
+
+  await check('a project with no work items reports empty analytics', async () => {
+    const empty = (await request('GET', `${base}/api/dashboard`)).body.projects
+      .find((p) => p.id !== projectId);
+
+    if (!empty) return; // Only one project in this run.
+    const res = await request('GET', `${base}/api/projects/${encodeURIComponent(empty.id)}/analytics`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.totals.itemCount >= 0);
+    assert.equal(res.body.totals.avgCycleTimeMs, null);
   });
 
   console.log('validation');
