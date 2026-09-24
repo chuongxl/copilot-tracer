@@ -131,6 +131,55 @@ Open http://localhost:4747 after starting the daemon.
 
 ---
 
+## Work Items
+
+Traces are grouped into work items so you can see effort per ticket instead of
+per prompt. When a prompt mentions a ticket, the tracer records the reference
+and attaches the trace to a work item for that project.
+
+Recognised references:
+
+| Source | Example |
+|--------|---------|
+| Jira | `ABC-123`, `https://jira.acme.com/browse/ABC-123` |
+| GitHub issue | `https://github.com/acme/app/issues/42`, `acme/app#42` |
+| GitHub PR | `https://github.com/acme/app/pull/7` |
+| Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/9001` |
+| Linear | `https://linear.app/team/issue/ENG-88/title` |
+
+Extraction is deterministic: no model call, no network, nothing added to the
+ingestion latency. Prompts are also classified as feature, bug, task, refactor,
+investigation, documentation, operations, or unknown. A prompt with no ticket
+reference is left alone and shows up in the uncategorized inbox, where you can
+attach it to a work item by hand.
+
+Standards that look like ticket keys (`UTF-8`, `SHA-256`, `RFC-2119`) are
+ignored.
+
+### API
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/projects/:id/work-items?status=` | List work items for a project |
+| `GET` | `/api/projects/:id/uncategorized-traces?limit=` | Traces not yet grouped |
+| `POST` | `/api/projects/:id/work-items/backfill` | Group traces captured before this feature existed |
+| `GET` | `/api/work-items/:id` | One work item with references and linked traces |
+| `POST` | `/api/work-items` | Create a work item by hand |
+| `PATCH` | `/api/work-items/:id` | Edit title, summary, kind, status |
+| `DELETE` | `/api/work-items/:id` | Delete a work item |
+| `POST` | `/api/work-items/:id/traces` | Attach a trace (`{ "traceId": "..." }`) |
+| `DELETE` | `/api/work-items/:id/traces/:traceId` | Detach a trace |
+
+Existing history is not grouped automatically. Run the backfill once:
+
+```bash
+curl -X POST "http://localhost:4747/api/projects/$(node -e 'console.log(encodeURIComponent(process.argv[1]))' 'project:/path/to/repo')/work-items/backfill"
+```
+
+Design notes live in `docs/work-items-productivity-design.md`.
+
+---
+
 ## Live Tracer
 
 Real-time trace table for a specific project.

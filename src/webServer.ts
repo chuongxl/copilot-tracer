@@ -4,7 +4,22 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary } from './db.js';
+import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
+import {
+  backfillWorkItems,
+  createWorkItem,
+  deleteWorkItem,
+  getUncategorizedTraces,
+  getWorkItem,
+  getWorkItems,
+  installWorkItemExtraction,
+  linkTraceToWorkItem,
+  unlinkTraceFromWorkItem,
+  updateWorkItem,
+} from './workItemService.js';
+import { isWorkItemKind } from './workItemExtraction.js';
+import { WORK_ITEM_STATUSES } from './types.js';
+import type { WorkItemKind, WorkItemStatus } from './types.js';
 import { traceEvents } from './proxy.js';
 import { registerOtlpRoutes } from './otlpReceiver.js';
 import { registerClaudeHookRoutes } from './claudeHooks.js';
@@ -15,6 +30,9 @@ export function startWebServer(port = 4747, sessionId?: string, projectId?: stri
   const app = express();
   const httpServer = createServer(app);
   const io = new Server(httpServer, { cors: { origin: '*' } });
+
+  // Group captured traces into work items as they are persisted.
+  installWorkItemExtraction();
 
   // Serve static web UI
   app.use(express.static(path.join(__dirname, '../web')));
@@ -128,6 +146,168 @@ ${prompt.trim()}`;
   // Project-scoped summary
   app.get('/api/projects/:id/summary', (req, res) => {
     res.json(getProjectSessionSummary(req.params.id));
+  });
+
+  // ── Work items ──────────────────────────────────────────────────────────────
+
+  const isStatus = (value: unknown): value is WorkItemStatus =>
+    typeof value === 'string' && (WORK_ITEM_STATUSES as readonly string[]).includes(value);
+
+  app.get('/api/projects/:id/work-items', (req, res) => {
+    if (!projectExists(req.params.id)) {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    const status = req.query.status;
+    if (status !== undefined && !isStatus(status)) {
+      res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
+      return;
+    }
+    res.json(getWorkItems(req.params.id, status));
+  });
+
+  app.get('/api/projects/:id/uncategorized-traces', (req, res) => {
+    if (!projectExists(req.params.id)) {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    const limitParam = req.query.limit;
+    const limit = limitParam === undefined ? 100 : Number(limitParam);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      res.status(400).json({ error: 'limit must be an integer between 1 and 500' });
+      return;
+    }
+    res.json(getUncategorizedTraces(req.params.id, limit));
+  });
+
+  app.post('/api/projects/:id/work-items/backfill', (req, res) => {
+    if (!projectExists(req.params.id)) {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    res.json(backfillWorkItems(req.params.id));
+  });
+
+  app.get('/api/work-items/:id', (req, res) => {
+    const item = getWorkItem(req.params.id);
+    if (!item) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json(item);
+  });
+
+  app.post('/api/work-items', (req, res) => {
+    const { projectId, title, summary, kind, status } = req.body as {
+      projectId?: string; title?: string; summary?: string; kind?: string; status?: string;
+    };
+
+    if (!projectId || typeof projectId !== 'string') {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    if (!projectExists(projectId)) {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    if (kind !== undefined && !isWorkItemKind(kind)) {
+      res.status(400).json({ error: 'kind is not a known work item kind' });
+      return;
+    }
+    if (status !== undefined && !isStatus(status)) {
+      res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
+      return;
+    }
+
+    res.status(201).json(createWorkItem({
+      projectId,
+      title: title.trim(),
+      summary: typeof summary === 'string' ? summary : null,
+      kind: kind as WorkItemKind | undefined,
+      status,
+      source: 'manual',
+      summarySource: 'user',
+    }));
+  });
+
+  app.patch('/api/work-items/:id', (req, res) => {
+    const { title, summary, kind, status } = req.body as {
+      title?: unknown; summary?: unknown; kind?: unknown; status?: unknown;
+    };
+
+    if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
+      res.status(400).json({ error: 'title must be a non-empty string' });
+      return;
+    }
+    if (summary !== undefined && summary !== null && typeof summary !== 'string') {
+      res.status(400).json({ error: 'summary must be a string or null' });
+      return;
+    }
+    if (kind !== undefined && !isWorkItemKind(kind)) {
+      res.status(400).json({ error: 'kind is not a known work item kind' });
+      return;
+    }
+    if (status !== undefined && !isStatus(status)) {
+      res.status(400).json({ error: `status must be one of ${WORK_ITEM_STATUSES.join(', ')}` });
+      return;
+    }
+
+    const updated = updateWorkItem(req.params.id, {
+      title: title as string | undefined,
+      summary: summary as string | null | undefined,
+      kind: kind as WorkItemKind | undefined,
+      status: status as WorkItemStatus | undefined,
+    });
+
+    if (!updated) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json(updated);
+  });
+
+  app.delete('/api/work-items/:id', (req, res) => {
+    if (!deleteWorkItem(req.params.id)) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/work-items/:id/traces', (req, res) => {
+    const { traceId } = req.body as { traceId?: string };
+
+    if (!traceId || typeof traceId !== 'string') {
+      res.status(400).json({ error: 'traceId is required' });
+      return;
+    }
+    if (!getWorkItem(req.params.id)) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    if (!getTrace(traceId)) {
+      res.status(404).json({ error: 'trace not found' });
+      return;
+    }
+
+    linkTraceToWorkItem({ workItemId: req.params.id, traceId, linkSource: 'manual', confidence: 1 });
+    res.json(getWorkItem(req.params.id));
+  });
+
+  app.delete('/api/work-items/:id/traces/:traceId', (req, res) => {
+    if (!getWorkItem(req.params.id)) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    if (!unlinkTraceFromWorkItem(req.params.id, req.params.traceId)) {
+      res.status(404).json({ error: 'trace is not linked to this work item' });
+      return;
+    }
+    res.json(getWorkItem(req.params.id));
   });
 
   // Socket.io — push real-time updates

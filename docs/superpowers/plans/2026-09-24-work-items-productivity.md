@@ -10,6 +10,28 @@
 
 **Spec:** `docs/work-items-productivity-design.md`
 
+## Progress
+
+Tasks 1 to 5 are implemented on `feature/work-items-productivity`. Extraction,
+persistence, the ingestion trigger, and the management APIs all ship with
+verification. Tasks 6 to 9 (workspace UI, editable summaries in the UI, git
+evidence, grouping evaluation) are still open.
+
+Two deliberate changes from the original task text:
+
+**One listener instead of 20 call sites.** Task 4 called for adding
+`persistWorkItemEvidence` after every `upsertTrace`. There are more than twenty
+such calls across `otlpReceiver.ts`, `claudeSession.ts`, and `proxy.ts`, and
+missing one silently drops traces from work items. `upsertTrace` now invokes a
+single registered listener, and `installWorkItemExtraction()` wires it up once
+in `startWebServer`. The project is resolved from `sessions.project_id`, so no
+call site needs to pass it.
+
+**Backfill added.** Extraction only fires on new traces, which left existing
+history ungrouped and the feature invisible on first run.
+`backfillWorkItems(projectId)` and `POST /api/projects/:id/work-items/backfill`
+regroup traces that were captured earlier.
+
 ## Global Constraints
 
 - Raw prompts and responses remain unchanged.
@@ -73,7 +95,7 @@ Task 7 -> Task 8
 **Interfaces:**
 - Produces a verifier that starts a daemon with an isolated `COPILOT_TRACER_HOME`, posts a trace payload, and reads work-item API responses.
 
-- [ ] **Step 1: Create the branch**
+- [x] **Step 1: Create the branch**
 
 ```bash
 git switch main
@@ -81,7 +103,7 @@ git pull --ff-only
 git switch -c feature/work-items-productivity
 ```
 
-- [ ] **Step 2: Write the baseline verifier**
+- [x] **Step 2: Write the baseline verifier**
 
 The script must:
 
@@ -92,7 +114,7 @@ The script must:
 5. Assert the server stays responsive.
 6. Stop only the child PID and remove the temporary home.
 
-- [ ] **Step 3: Run the baseline verifier**
+- [x] **Step 3: Run the baseline verifier**
 
 Run:
 
@@ -103,7 +125,7 @@ node scripts/verify-work-items.mjs
 
 Expected: the daemon starts, accepts the trace, and exits with code `0`. The work-item assertions remain absent until Task 2.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/verify-work-items.mjs
@@ -123,7 +145,7 @@ git commit -m "test: add work item verification harness"
 - Each reference contains `type`, `key`, `url`, `sourceText`, and `confidence`.
 - `kind` is one of the controlled work-item kinds from the design document.
 
-- [ ] **Step 1: Write failing extraction cases**
+- [x] **Step 1: Write failing extraction cases**
 
 The script must assert:
 
@@ -139,7 +161,7 @@ extract("Why is telemetry missing from VS Code?").kind === "investigation";
 extract("dashboard API").kind === "unknown";
 ```
 
-- [ ] **Step 2: Run the extraction script**
+- [x] **Step 2: Run the extraction script**
 
 Run:
 
@@ -149,7 +171,7 @@ node scripts/test-work-item-extraction.mjs
 
 Expected: FAIL because `src/workItemExtraction.ts` does not exist.
 
-- [ ] **Step 3: Implement the parser**
+- [x] **Step 3: Implement the parser**
 
 Use anchored regular expressions and normalization:
 
@@ -170,7 +192,7 @@ export function extractWorkItemEvidence(prompt: string): WorkItemEvidence;
 
 Deduplicate references by normalized type and key. Return `unknown` when no classifier has enough evidence.
 
-- [ ] **Step 4: Run the extraction script**
+- [x] **Step 4: Run the extraction script**
 
 Run:
 
@@ -180,7 +202,7 @@ node scripts/test-work-item-extraction.mjs
 
 Expected: PASS for Jira keys, GitHub issues, GitHub PRs, Azure URLs, work-kind classification, deduplication, and unknown fallback.
 
-- [ ] **Step 5: Type-check**
+- [x] **Step 5: Type-check**
 
 Run:
 
@@ -190,7 +212,7 @@ npx tsc --noEmit
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/types.ts src/workItemExtraction.ts scripts/test-work-item-extraction.mjs
@@ -213,7 +235,7 @@ git commit -m "feat: detect work item evidence from prompts"
 - `saveTicketReference(input: TicketReferenceInput): void`.
 - `persistWorkItemEvidence(trace: TraceEntry, projectId: string): WorkItemEvidenceResult`.
 
-- [ ] **Step 1: Extend schema initialization**
+- [x] **Step 1: Extend schema initialization**
 
 Add these tables in the existing database initialization path:
 
@@ -225,7 +247,7 @@ CREATE TABLE IF NOT EXISTS work_item_references (...);
 
 Use foreign keys where the current schema supports them. Add unique constraints for `(work_item_id, trace_id)` and `(work_item_id, reference_type, reference_key)`.
 
-- [ ] **Step 2: Write persistence assertions**
+- [x] **Step 2: Write persistence assertions**
 
 Assert that:
 
@@ -234,11 +256,11 @@ Assert that:
 3. A prompt containing a different ticket creates a separate detected item.
 4. One trace can link to two work items.
 
-- [ ] **Step 3: Implement service functions**
+- [x] **Step 3: Implement service functions**
 
 Use exact ticket references as the first matching key. Generate a deterministic title such as `ABC-123` when no summary exists. Store `source`, `confidence`, and extractor version with generated metadata.
 
-- [ ] **Step 4: Run persistence assertions**
+- [x] **Step 4: Run persistence assertions**
 
 Run:
 
@@ -249,7 +271,7 @@ node scripts/test-work-item-extraction.mjs
 
 Expected: PASS with an isolated database.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db.ts src/types.ts src/workItemService.ts scripts/test-work-item-extraction.mjs
@@ -268,7 +290,7 @@ git commit -m "feat: persist project work items and trace links"
 - Consumes `TraceEntry` and resolved `projectId`.
 - Produces persisted work-item evidence without delaying the ingestion response.
 
-- [ ] **Step 1: Add a failing end-to-end assertion**
+- [x] **Step 1: Add a failing end-to-end assertion**
 
 After posting a prompt containing `ABC-123`, the verifier must assert:
 
@@ -278,11 +300,11 @@ assert.equal(items[0].ticketKey, "ABC-123");
 assert.equal(items[0].traceCount, 1);
 ```
 
-- [ ] **Step 2: Add the post-persistence hook**
+- [x] **Step 2: Add the post-persistence hook**
 
 Call `persistWorkItemEvidence(entry, resolvedProjectId)` immediately after `upsertTrace(entry)` in each trace-producing path. The service must be idempotent and must not call external services.
 
-- [ ] **Step 3: Run the verifier**
+- [x] **Step 3: Run the verifier**
 
 Run:
 
@@ -293,7 +315,7 @@ node scripts/verify-work-items.mjs
 
 Expected: PASS and the OTLP response remains successful.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/otlpReceiver.ts src/claudeSession.ts src/workItemService.ts scripts/verify-work-items.mjs
@@ -315,7 +337,7 @@ git commit -m "feat: extract work items from captured traces"
 - `POST /api/work-items/:id/traces`
 - `DELETE /api/work-items/:id/traces/:traceId`
 
-- [ ] **Step 1: Write API assertions**
+- [x] **Step 1: Write API assertions**
 
 Cover:
 
@@ -327,11 +349,11 @@ Cover:
 6. Reject an unknown project or work item with `404`.
 7. Reject invalid kind and status with `400`.
 
-- [ ] **Step 2: Implement route validation**
+- [x] **Step 2: Implement route validation**
 
 Validate all IDs and enum fields at the HTTP boundary. Return explicit JSON errors. Do not silently ignore invalid links.
 
-- [ ] **Step 3: Run the API verifier**
+- [x] **Step 3: Run the API verifier**
 
 Run:
 
@@ -342,7 +364,7 @@ node scripts/verify-work-items.mjs
 
 Expected: PASS for all API assertions.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/webServer.ts src/workItemService.ts scripts/verify-work-items.mjs

@@ -157,6 +157,10 @@ export function findProjectByRepo(repoUrl: string): { id: string; path: string; 
   return row ? { id: row.id as string, path: row.path as string, local_path: row.local_path as string | null } : null;
 }
 
+export function projectExists(projectId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
+}
+
 export function createSession(id: string, projectId?: string): void {
   // Backfill-safe upsert: insert if missing, set project_id only when a project is
   // provided AND the session currently has none (never null out an existing link).

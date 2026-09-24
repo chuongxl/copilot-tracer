@@ -265,6 +265,34 @@ export function persistWorkItemEvidence(trace, projectId) {
     const workItemIds = run();
     return { status: 'linked', workItemIds };
 }
+/**
+ * Group traces that were captured before extraction existed, or before a
+ * session was linked to its project. Safe to re-run: linking is idempotent.
+ */
+export function backfillWorkItems(projectId, limit = 5000) {
+    const rows = (projectId
+        ? db.prepare(`
+        SELECT t.id, t.session_id, t.prompt, s.project_id
+        FROM traces t JOIN sessions s ON s.id = t.session_id
+        WHERE s.project_id = ?
+        ORDER BY t.date_time DESC LIMIT ?
+      `).all(projectId, limit)
+        : db.prepare(`
+        SELECT t.id, t.session_id, t.prompt, s.project_id
+        FROM traces t JOIN sessions s ON s.id = t.session_id
+        WHERE s.project_id IS NOT NULL
+        ORDER BY t.date_time DESC LIMIT ?
+      `).all(limit));
+    let linked = 0;
+    for (const row of rows) {
+        if (!row.prompt?.trim())
+            continue;
+        const trace = { id: row.id, sessionId: row.session_id, prompt: row.prompt };
+        if (persistWorkItemEvidence(trace, row.project_id).status === 'linked')
+            linked += 1;
+    }
+    return { scanned: rows.length, linked };
+}
 // Streaming updates re-persist the same trace many times. Remembering the last
 // prompt we extracted from keeps that off the hot path without changing results.
 const PROCESSED_LIMIT = 2000;

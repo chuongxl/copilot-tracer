@@ -144,6 +144,9 @@ export function findProjectByRepo(repoUrl) {
     const row = db.prepare('SELECT id, path, local_path FROM projects WHERE repo_url = ?').get(repoUrl);
     return row ? { id: row.id, path: row.path, local_path: row.local_path } : null;
 }
+export function projectExists(projectId) {
+    return !!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
+}
 export function createSession(id, projectId) {
     // Backfill-safe upsert: insert if missing, set project_id only when a project is
     // provided AND the session currently has none (never null out an existing link).

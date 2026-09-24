@@ -13,9 +13,11 @@
 
 - `npx tsc --noEmit` — type-check only (no output). Run before publishing.
 
-## No test suite
+## Verification scripts
 
-There is no test framework or test script. Manual testing only:
+There is no test framework. Verification runs through plain Node scripts:
+- `npm run test:work-items` runs work-item extraction and persistence checks against a throwaway DB
+- `npm run verify:work-items` boots a real daemon on a free port, feeds it OTLP spans, and exercises the work-item HTTP API
 - `node test-claude-hooks.mjs` runs end-to-end Claude hook + OTLP checks against a throwaway DB
 - `node test-seed.mjs` seeds 4 sample traces to SQLite
 - Then `npm run dev -- --daemon --port 4747`
@@ -36,6 +38,7 @@ No ESLint, Prettier, or other lint/format tools are configured. Follow existing 
 - **Claude Code hooks** (`src/claudeHooks.ts` → `src/claudeSession.ts`) — `POST /claude/hook` receives Claude's turn/tool lifecycle. Hooks own the lifecycle, OTLP enriches it with tokens/model/cost, joined on `prompt_id` = OTLP `prompt.id`. Falls back to OTLP-only when hooks aren't configured. The endpoint must always return `204` so it never blocks a Claude session.
 - **Credit calculation** lives in `src/proxy.ts` with model-specific rate tables.
 - **Data model**: `Project → Session → Trace` hierarchy. Projects auto-created from repo URL.
+- **Work items** (`src/workItemExtraction.ts`, `src/workItemService.ts`) — traces are grouped by ticket reference. Extraction is pure and deterministic; `upsertTrace` fires a single registered listener (`setTracePersistedListener`) so every ingestion path is covered without patching each call site. `installWorkItemExtraction()` runs once in `startWebServer`.
 
 ## Key CLI Flags
 

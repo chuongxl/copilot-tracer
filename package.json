@@ -35,6 +35,8 @@
     "console": "tsx src/cli.ts --ui console",
     "web": "tsx src/cli.ts --ui web",
     "start": "node dist/cli.js",
+    "test:work-items": "npm run build && node scripts/test-work-item-extraction.mjs",
+    "verify:work-items": "npm run build && node scripts/verify-work-items.mjs",
     "publish:npm": "bash scripts/publish.sh"
   },
   "dependencies": {
