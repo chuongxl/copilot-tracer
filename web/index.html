@@ -1140,10 +1140,16 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     const statusEl = document.getElementById('inbox-count-status');
     listEl.innerHTML = '<div class="ws-empty">Loading…</div>';
 
+    const INBOX_LIMIT = 100;
     try {
-      const traces = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/uncategorized-traces?limit=100`);
+      const traces = await api('GET', `/api/projects/${encodeURIComponent(workspaceProjectId)}/uncategorized-traces?limit=${INBOX_LIMIT}`);
       const suggestedCount = traces.filter(t => (t.suggestions || []).length).length;
-      statusEl.textContent = `${traces.length} ungrouped prompt${traces.length === 1 ? '' : 's'}`
+      // A full page means there are more behind it. Saying "100 ungrouped
+      // prompts" when the dashboard says 536 reads as a bug, so name the cap.
+      const capped = traces.length === INBOX_LIMIT;
+      statusEl.textContent = (capped
+        ? `First ${INBOX_LIMIT} ungrouped prompts`
+        : `${traces.length} ungrouped prompt${traces.length === 1 ? '' : 's'}`)
         + (suggestedCount ? `, ${suggestedCount} with a suggested match` : '');
       loadDismissed();
 

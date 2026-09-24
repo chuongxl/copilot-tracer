@@ -152,15 +152,23 @@ export function findWorkItemIdByReference(projectId, type, key) {
  * what should happen to this prompt?
  */
 export function getUncategorizedTraces(projectId, limit = 100) {
+    // Traces carrying a pending suggestion sort first. On real data this project
+    // had 536 unlinked prompts and 84 suggestions, all older than the newest 100,
+    // so a plain date sort hid every actionable row behind the limit and the
+    // suggestion tier looked broken. Date still orders within each group.
     const rows = db.prepare(`
     SELECT t.id, t.session_id, t.date_time, t.prompt, t.tokens_total, t.ai_credits,
-           t.duration_ms, t.status
+           t.duration_ms, t.status,
+           EXISTS (
+             SELECT 1 FROM work_item_suggestions sg
+             WHERE sg.trace_id = t.id AND sg.state = 'pending'
+           ) as has_suggestion
     FROM traces t
     JOIN sessions s ON s.id = t.session_id
     WHERE s.project_id = ?
       AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
       AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
-    ORDER BY t.date_time DESC
+    ORDER BY has_suggestion DESC, t.date_time DESC
     LIMIT ?
   `).all(projectId, limit);
     const suggestions = loadPendingSuggestions(rows.map((t) => t.id));

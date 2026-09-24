@@ -81,6 +81,26 @@ check('ignores standards and encodings that look like ticket keys', () => {
   assert.deepEqual(extractWorkItemEvidence(noise).references, []);
 });
 
+check('does not read a source line range as a ticket key', () => {
+  // Found in real traces: a code review that cited line ranges produced three
+  // work items titled L12-38, L30-44 and L52-71.
+  const prompt = '`L52-71: delete: retry wrapper around an idempotent local call.` Also `L12-38: stdlib`.';
+  assert.deepEqual(extractWorkItemEvidence(prompt).references, []);
+});
+
+check('a line range next to a real key keeps only the key', () => {
+  const prompt = 'Per L30-44 of the diff, this is the fix for DDM-5101.';
+  const keys = extractWorkItemEvidence(prompt).references.map((r) => r.key);
+  assert.deepEqual(keys, ['DDM-5101']);
+});
+
+check('a project key with two leading letters still matches when digits follow', () => {
+  // The line-range guard rejects a single letter before digits. Keys like OM2
+  // must survive it.
+  const keys = extractWorkItemEvidence('Ship OM2-14 today').references.map((r) => r.key);
+  assert.deepEqual(keys, ['OM2-14']);
+});
+
 check('never treats a credential prefix as a ticket key', () => {
   const prompt = 'My key is AKIA-1234 and the token is GHP-9999. Fix ABC-777.';
   const keys = extractWorkItemEvidence(prompt).references.map((r) => r.key);
@@ -670,6 +690,36 @@ if (!service) {
 
   check('a single shared distinctive word is not enough', () => {
     assert.equal(similarityScore('rewrite the tokenizer', 'tokenizer'), 0);
+  });
+
+  // The next three come from real captured traces. Each one produced a wrong
+  // suggestion before the token lists and the damping were tightened.
+
+  check('a bare continuation prompt matches nothing', () => {
+    // Scored 1.00 against an unrelated work item: both of its words survived
+    // tokenizing, and overlap coefficient divides by the smaller set.
+    assert.deepEqual([...distinctiveTokens('continue on stage 02')], []);
+    assert.equal(similarityScore('continue on stage 02', 'rework the booking amendment flow'), 0);
+    assert.equal(similarityScore('continue on stage 02', 'continue on stage 03'), 0);
+  });
+
+  check('two prompts quoting unrelated github urls do not match on the url', () => {
+    // These tied at exactly 0.50 because they shared https, github and com.
+    const score = similarityScore(
+      'explore this pstack https://github.com/backnotprop/pstack and install it',
+      'read https://github.com/ocean-network-express/om-com-libs for the helper',
+    );
+    assert.equal(score, 0, `url scaffolding still scores, got ${score}`);
+  });
+
+  check('a two-word overlap scores below a three-word one', () => {
+    // Overlap coefficient alone returns 1.0 for both. Damping by the amount of
+    // evidence is what separates them.
+    const two = similarityScore('tokenizer backoff', 'tokenizer backoff rewrite for idle sockets');
+    const three = similarityScore('tokenizer backoff sockets', 'tokenizer backoff sockets rewrite for idle');
+    assert.ok(two > 0, 'two shared distinctive words should still register');
+    assert.ok(three > two, `expected more evidence to score higher, got ${two} then ${three}`);
+    assert.equal(three, 1);
   });
 
   check('scoring never throws on junk input', () => {

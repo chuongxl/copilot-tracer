@@ -50,6 +50,31 @@ const FIXTURES = [
   // missed one. See docs/work-items-evaluation.md.
   { category: 'lower case (limit)', prompt: 'abc-123 in lower case is not read as a ticket.', expected: [] },
 
+  // 1b. Source line ranges, taken verbatim from captured traces. These scored
+  // as tickets and produced three real work items titled L12-38, L30-44 and
+  // L52-71. The fixture set said 100% precision at the time, which is exactly
+  // why cases drawn from real prompts belong here and not only in unit tests.
+  {
+    category: 'line ranges (real)',
+    prompt: '`L52-71: delete: retry wrapper around an idempotent local call. Nothing replaces it.`',
+    expected: [],
+  },
+  {
+    category: 'line ranges (real)',
+    prompt: '`L30-44: shrink: manual loop builds dict. dict(zip(keys, values)) is one line.`',
+    expected: [],
+  },
+  {
+    category: 'line ranges (real)',
+    prompt: '`L12-38: stdlib: 27-line validator class. "@" in email is one line.`',
+    expected: [],
+  },
+  {
+    category: 'line ranges (real)',
+    prompt: 'Per L30-44 of the diff, this is the fix for DDM-5101.',
+    expected: ['DDM-5101'],
+  },
+
   // 2. GitHub issue and PR URLs
   { category: 'github urls', prompt: 'See https://github.com/acme/app/issues/42 for the repro.', expected: ['acme/app#42'] },
   { category: 'github urls', prompt: 'Review https://github.com/acme/app/pull/1337 before merging.', expected: ['acme/app#1337'] },

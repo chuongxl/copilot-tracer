@@ -154,3 +154,70 @@ archived) and the tile reads "Open Work Items", matching the workspace.
 - `getProjectWorkItemSummary` still runs about four queries per project card. It
   should fold into the grouped query if anyone accumulates many projects.
 - No time-window filter on analytics. Everything is all-time.
+
+## Validating against real traces
+
+Everything above was verified against seeded fixtures, which I wrote myself and
+which therefore only contained the patterns I already had in mind. Running the
+same code over a real 19MB capture, 41 projects and 892 traces, found four
+faults that the fixture suite rated 100% clean.
+
+### The extractor read source line ranges as tickets
+
+Three of the ten detected work items were titled `L12-38`, `L30-44` and
+`L52-71`. They came from a code review that cited line ranges:
+
+```
+`L52-71: delete: retry wrapper around an idempotent local call.`
+```
+
+The key pattern `[A-Z][A-Z0-9]{1,9}-\d+` accepts `L52` as a project prefix. A
+denylist cannot fix this because the digits are unbounded, so the guard is a
+shape rule: a single letter followed by digits is never a project key. Keys with
+two or more leading letters, including `OM2-14`, are unaffected.
+
+A 30% false-positive rate, on a fixture suite reporting 100% precision.
+
+### Suggestions existed but were unreachable
+
+The backfill reported 84 suggestions. The inbox showed none.
+
+The inbox took the 100 newest unlinked prompts and then looked for suggestions
+among them. With 536 unlinked prompts in one project, every suggested prompt was
+older than that window. The feature was invisible on any project large enough to
+need it. Traces with a pending suggestion now sort first, with date ordering
+inside each group.
+
+### Overlap coefficient handed short prompts a perfect score
+
+`continue on stage 02` scored 1.00 against an unrelated work item. Its only
+surviving tokens were "continue" and "stage", and overlap coefficient divides by
+the smaller set, so two matched words out of two is a perfect match.
+
+Two changes. Process and continuation words joined `BROAD_TERMS`, so that prompt
+now tokenizes to nothing at all. And the score is scaled by
+`min(1, shared / 3)`, so two shared words can no longer express certainty. Three
+or more scores at face value.
+
+### URL scaffolding created false matches
+
+`https`, `github` and `com` survived tokenizing, so any two prompts quoting a
+GitHub link shared three tokens. That is why two unrelated items tied at exactly
+0.50 on the same prompt. Those tokens are now broad terms. Path segments such as
+`backnotprop` stay, since they are genuinely distinctive.
+
+### Results
+
+Suggestions fell from 84 to 76, and the survivors are defensible. Work items
+fell from 10 to 7, all legitimate. The four real prompts are now fixtures in the
+evaluation set, which grew from 24 to 28.
+
+### What the quality panel says about real coverage
+
+On real data: 19% of prompts got a candidate, and 93% remain unlinked.
+
+That is the honest number, and it is the one the design asked to watch. Ticket
+keys only appear in prompts when someone types them, and mostly nobody does.
+The feature works correctly and covers a minority of real work. Raising that
+number is a product question, not a bug, and the panel is what makes the
+question answerable instead of guessable.

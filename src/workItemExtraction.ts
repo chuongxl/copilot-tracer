@@ -126,6 +126,13 @@ export const BARE_ISSUE_CONFIDENCE = 0.6;
 // bare form scores below AUTO_LINK_CONFIDENCE so it shows as a suggestion.
 const COLOR_CONTEXT_RE = /(colou?r|background|bg|fill|stroke|border|shadow|hex)\s*[:=]?\s*$/i;
 
+// A single letter followed by digits is the source-line convention, not a
+// project key: `L52-71` in a code review, `L12-38` in a diff citation. Real
+// data produced three such work items before this guard existed. Keys with two
+// or more leading letters (`OM2-14`) are unaffected, and a denylist could never
+// cover this because the digits are unbounded.
+const LINE_RANGE_PREFIX_RE = /^[A-Z]\d+$/;
+
 function extractPlainReferences(residual: string): Located[] {
   const found: Located[] = [];
 
@@ -146,6 +153,7 @@ function extractPlainReferences(residual: string): Located[] {
   const jiraRe = /\b([A-Z][A-Z0-9]{1,9})-(\d+)\b/g;
   for (let m = jiraRe.exec(residual); m; m = jiraRe.exec(residual)) {
     if (JIRA_PREFIX_DENYLIST.has(m[1])) continue;
+    if (LINE_RANGE_PREFIX_RE.test(m[1])) continue;
     found.push({
       index: m.index,
       ref: {
@@ -387,6 +395,16 @@ const BROAD_TERMS = new Set([
   'errors', 'feature', 'features', 'task', 'tasks', 'work', 'change', 'changes', 'update',
   'updates', 'add', 'adding', 'remove', 'create', 'implement', 'support', 'project',
   'repo', 'repository', 'branch', 'commit', 'pr', 'review', 'build', 'run', 'script',
+  // Process and continuation words. Real traces are full of "continue on stage
+  // 02" and "next step", which carry no information about which item is meant.
+  // Left in, they let a two-word prompt score a perfect match against anything.
+  'continue', 'continued', 'stage', 'stages', 'step', 'steps', 'next', 'start',
+  'finish', 'complete', 'completed', 'done', 'please', 'thanks', 'help', 'make',
+  'want', 'need', 'check', 'list', 'show', 'explore', 'install', 'setup', 'move',
+  'now', 'then', 'also', 'again', 'more', 'some', 'thing', 'things', 'stuff',
+  // URL scaffolding. Every prompt quoting a GitHub link shares these, which
+  // made unrelated prompts tie at exactly 0.50 on real data.
+  'http', 'https', 'www', 'com', 'org', 'net', 'github', 'gitlab', 'bitbucket',
 ]);
 
 /** Shortest token worth comparing. Two-letter tokens match far too easily. */
@@ -394,6 +412,15 @@ const MIN_TOKEN_LENGTH = 3;
 
 /** Below this many shared distinctive tokens, a score is noise. */
 const MIN_SHARED_TOKENS = 2;
+
+/**
+ * Shared-token count at which an overlap is trusted at face value. Below it the
+ * score is scaled down, because overlap coefficient divides by the smaller set
+ * and so hands a two-word prompt a perfect 1.0 the moment both words appear in
+ * a long summary. Real traces hit exactly that: "continue on stage 02" scored
+ * 1.00 against an unrelated item.
+ */
+const CONFIDENT_SHARED_TOKENS = 3;
 
 /** Overlap at or above this counts as the design's "strong similarity". */
 export const SIMILARITY_SUGGEST_MIN = 0.34;
@@ -429,7 +456,9 @@ export function similarityScore(a: string, b: string): number {
   for (const token of left) if (right.has(token)) shared += 1;
   if (shared < MIN_SHARED_TOKENS) return 0;
 
-  return Number((shared / Math.min(left.size, right.size)).toFixed(4));
+  const overlap = shared / Math.min(left.size, right.size);
+  const evidence = Math.min(1, shared / CONFIDENT_SHARED_TOKENS);
+  return Number((overlap * evidence).toFixed(4));
 }
 
 // ── Draft generation ──────────────────────────────────────────────────────────
