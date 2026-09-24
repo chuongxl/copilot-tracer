@@ -7,6 +7,7 @@ import {
   generateWorkItemDraft,
 } from './workItemExtraction.js';
 import type { TicketReferenceType, WorkItemDraft, WorkItemKind } from './workItemExtraction.js';
+import { collectGitEvidence, matchEvidenceToKeys } from './workItemGitEvidence.js';
 import type {
   CreateWorkItemInput,
   TraceEntry,
@@ -35,6 +36,9 @@ interface WorkItemRow {
   acceptance_criteria: string | null;
   draft_generator_version: string | null;
   criteria_source: string | null;
+  git_evidence: string | null;
+  evidence_checked_at: string | null;
+  completion_note: string | null;
   created_at: string;
   updated_at: string;
   trace_count: number;
@@ -48,6 +52,7 @@ const AGGREGATE_SELECT = `
     wi.id, wi.project_id, wi.title, wi.summary, wi.kind, wi.status, wi.source,
     wi.summary_source, wi.confidence, wi.extractor_version, wi.created_at, wi.updated_at,
     wi.acceptance_criteria, wi.draft_generator_version, wi.criteria_source,
+    wi.git_evidence, wi.evidence_checked_at, wi.completion_note,
     COUNT(wit.trace_id) AS trace_count,
     COALESCE(SUM(t.tokens_total), 0) AS total_tokens,
     COALESCE(SUM(t.ai_credits), 0) AS total_credits,
@@ -172,7 +177,17 @@ export function getWorkItem(id: string): WorkItemDetail | null {
   }));
 
   const references = loadReferences([id]).get(id) ?? [];
-  return { ...toWorkItem(row, references), traces };
+  let gitEvidence: unknown | null = null;
+  if (row.git_evidence) {
+    try { gitEvidence = JSON.parse(row.git_evidence); } catch { gitEvidence = null; }
+  }
+  return {
+    ...toWorkItem(row, references),
+    traces,
+    gitEvidence,
+    evidenceCheckedAt: row.evidence_checked_at ?? null,
+    completionNote: row.completion_note ?? null,
+  };
 }
 
 export function findWorkItemIdByReference(
@@ -270,9 +285,23 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   return getWorkItem(id) as WorkItem;
 }
 
+export class CompletionNotConfirmedError extends Error {
+  constructor() {
+    super('Marking a work item done needs explicit confirmation. Send confirmCompletion: true.');
+    this.name = 'CompletionNotConfirmedError';
+  }
+}
+
 export function updateWorkItem(id: string, input: UpdateWorkItemInput): WorkItemDetail | null {
-  const existing = db.prepare('SELECT id FROM work_items WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, status FROM work_items WHERE id = ?').get(id) as
+    { id: string; status: string } | undefined;
   if (!existing) return null;
+
+  // Git evidence and prompt counts can suggest an item is finished, but only a
+  // person decides that, so the move to done needs an explicit confirmation.
+  if (input.status === 'done' && existing.status !== 'done' && input.confirmCompletion !== true) {
+    throw new CompletionNotConfirmedError();
+  }
 
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -280,6 +309,10 @@ export function updateWorkItem(id: string, input: UpdateWorkItemInput): WorkItem
   if (input.title !== undefined) { sets.push('title = ?'); params.push(input.title); }
   if (input.kind !== undefined) { sets.push('kind = ?'); params.push(input.kind); }
   if (input.status !== undefined) { sets.push('status = ?'); params.push(input.status); }
+  if (input.completionNote !== undefined) {
+    sets.push('completion_note = ?');
+    params.push(input.completionNote);
+  }
   if (input.summary !== undefined) {
     sets.push('summary = ?', "summary_source = 'user'");
     params.push(input.summary);
@@ -493,6 +526,36 @@ export function applyWorkItemDraft(
   db.prepare(`UPDATE work_items SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 
   return { item: getWorkItem(workItemId) as WorkItemDetail, draft, applied };
+}
+
+// ── Git evidence ──────────────────────────────────────────────────────────────
+
+/**
+ * Collect git evidence for one work item and store it.
+ *
+ * Evidence is informational. It never changes status on its own: a commit
+ * mentioning ABC-123 proves work happened, not that the work is done.
+ */
+export function refreshWorkItemEvidence(workItemId: string): WorkItemDetail | null {
+  const row = db.prepare('SELECT project_id FROM work_items WHERE id = ?').get(workItemId) as
+    { project_id: string } | undefined;
+  if (!row) return null;
+
+  const project = db.prepare('SELECT path, local_path FROM projects WHERE id = ?').get(row.project_id) as
+    { path: string; local_path: string | null } | undefined;
+
+  // `path` is a filesystem path for locally detected projects and a repo URL
+  // for ones discovered through telemetry, so only use it when it looks local.
+  const candidate = project?.local_path
+    ?? (project?.path?.startsWith('/') ? project.path : null);
+
+  const references = loadReferences([workItemId]).get(workItemId) ?? [];
+  const evidence = matchEvidenceToKeys(collectGitEvidence(candidate), references.map((r) => r.key));
+
+  db.prepare('UPDATE work_items SET git_evidence = ?, evidence_checked_at = ? WHERE id = ?')
+    .run(JSON.stringify(evidence), evidence.collectedAt, workItemId);
+
+  return getWorkItem(workItemId);
 }
 
 // Streaming updates re-persist the same trace many times. Remembering the last

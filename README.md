@@ -168,6 +168,7 @@ ignored.
 | `PATCH` | `/api/work-items/:id` | Edit title, summary, kind, status, acceptance criteria |
 | `GET` | `/api/work-items/:id/draft` | Preview a generated draft without saving it |
 | `POST` | `/api/work-items/:id/draft` | Regenerate summary, criteria and kind from linked prompts |
+| `POST` | `/api/work-items/:id/refresh-evidence` | Re-read local git for commits and branches citing the ticket |
 | `DELETE` | `/api/work-items/:id` | Delete a work item |
 | `POST` | `/api/work-items/:id/traces` | Attach a trace (`{ "traceId": "..." }`) |
 | `DELETE` | `/api/work-items/:id/traces/:traceId` | Detach a trace |
@@ -196,6 +197,14 @@ prompts linked to the item. Criteria come from bullets under an "acceptance
 criteria" heading and from any line stating an obligation ("must", "should",
 "needs to"). Fields you edited are left alone. Nothing leaves your machine:
 the draft is plain text parsing, not a model call.
+
+**Git evidence.** "Check git evidence" reads the current branch, the origin
+remote, and the last 50 commits of the project checkout, then keeps the commits
+whose subject cites one of the item's ticket keys. It only reads. Evidence never
+moves an item to done by itself, and the API returns 409 unless the request
+carries `confirmCompletion: true`. Projects detected from a repository URL have
+no checkout on this machine, so they report an explicit evidence error instead
+of silently showing nothing.
 
 **Inbox tab.** Prompts in the project that no work item has claimed. Attach one
 to an existing item or spin up a new item from it.

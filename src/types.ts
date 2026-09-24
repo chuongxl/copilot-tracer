@@ -137,6 +137,9 @@ export interface WorkItem {
 
 export interface WorkItemDetail extends WorkItem {
   traces: WorkItemTraceSummary[];
+  gitEvidence: unknown | null;
+  evidenceCheckedAt: string | null;
+  completionNote: string | null;
 }
 
 export interface CreateWorkItemInput {
@@ -158,6 +161,8 @@ export interface UpdateWorkItemInput {
   kind?: WorkItemKind;
   status?: WorkItemStatus;
   acceptanceCriteria?: string[];
+  confirmCompletion?: boolean;
+  completionNote?: string | null;
 }
 
 export interface WorkItemTraceLinkInput {

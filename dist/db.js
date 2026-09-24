@@ -67,6 +67,9 @@ db.exec(`
     acceptance_criteria TEXT,
     draft_generator_version TEXT,
     criteria_source TEXT,
+    git_evidence TEXT,
+    evidence_checked_at TEXT,
+    completion_note TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -108,6 +111,18 @@ try {
 catch { }
 try {
     db.prepare('ALTER TABLE work_items ADD COLUMN criteria_source TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN git_evidence TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN evidence_checked_at TEXT').run();
+}
+catch { }
+try {
+    db.prepare('ALTER TABLE work_items ADD COLUMN completion_note TEXT').run();
 }
 catch { }
 try {

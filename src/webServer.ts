@@ -7,6 +7,8 @@ import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
 import {
   applyWorkItemDraft,
+  CompletionNotConfirmedError,
+  refreshWorkItemEvidence,
   backfillWorkItems,
   buildWorkItemDraft,
   createWorkItem,
@@ -237,8 +239,9 @@ ${prompt.trim()}`;
   });
 
   app.patch('/api/work-items/:id', (req, res) => {
-    const { title, summary, kind, status, acceptanceCriteria } = req.body as {
+    const { title, summary, kind, status, acceptanceCriteria, confirmCompletion, completionNote } = req.body as {
       title?: unknown; summary?: unknown; kind?: unknown; status?: unknown; acceptanceCriteria?: unknown;
+      confirmCompletion?: unknown; completionNote?: unknown;
     };
 
     if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
@@ -263,14 +266,40 @@ ${prompt.trim()}`;
       return;
     }
 
-    const updated = updateWorkItem(req.params.id, {
-      title: title as string | undefined,
-      summary: summary as string | null | undefined,
-      kind: kind as WorkItemKind | undefined,
-      status: status as WorkItemStatus | undefined,
-      acceptanceCriteria: acceptanceCriteria as string[] | undefined,
-    });
+    if (completionNote !== undefined && completionNote !== null && typeof completionNote !== 'string') {
+      res.status(400).json({ error: 'completionNote must be a string or null' });
+      return;
+    }
 
+    let updated;
+    try {
+      updated = updateWorkItem(req.params.id, {
+        title: title as string | undefined,
+        summary: summary as string | null | undefined,
+        kind: kind as WorkItemKind | undefined,
+        status: status as WorkItemStatus | undefined,
+        acceptanceCriteria: acceptanceCriteria as string[] | undefined,
+        confirmCompletion: confirmCompletion === true,
+        completionNote: completionNote as string | null | undefined,
+      });
+    } catch (error) {
+      if (error instanceof CompletionNotConfirmedError) {
+        res.status(409).json({ error: error.message, needsConfirmation: true });
+        return;
+      }
+      throw error;
+    }
+
+    if (!updated) {
+      res.status(404).json({ error: 'work item not found' });
+      return;
+    }
+    res.json(updated);
+  });
+
+  // Re-read git for this work item. Read-only, and never changes status.
+  app.post('/api/work-items/:id/refresh-evidence', (req, res) => {
+    const updated = refreshWorkItemEvidence(req.params.id);
     if (!updated) {
       res.status(404).json({ error: 'work item not found' });
       return;

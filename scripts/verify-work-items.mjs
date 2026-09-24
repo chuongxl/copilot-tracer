@@ -212,12 +212,25 @@ async function main() {
 
   console.log('manual grouping');
 
+  await check('refuses to mark an item done without confirmation', async () => {
+    const res = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(workItemId)}`, {
+      status: 'done',
+    });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.needsConfirmation, true);
+
+    const unchanged = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    assert.equal(unchanged.body.status, 'active');
+  });
+
   await check('edits title, summary, kind and status', async () => {
     const res = await request('PATCH', `${base}/api/work-items/${encodeURIComponent(workItemId)}`, {
       title: 'ABC-123 dashboard filters',
       summary: 'Ship the project filter',
       kind: 'task',
       status: 'done',
+      confirmCompletion: true,
+      completionNote: 'merged by hand',
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.title, 'ABC-123 dashboard filters');
@@ -312,6 +325,31 @@ async function main() {
     assert.equal((await request('GET', `${base}/api/work-items/work-item:nope/draft`)).status, 404);
   });
 
+  console.log('git evidence');
+
+  await check('records evidence without changing status', async () => {
+    const before = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    const res = await request('POST', `${base}/api/work-items/${encodeURIComponent(workItemId)}/refresh-evidence`, {});
+    assert.equal(res.status, 200);
+    assert.ok(res.body.gitEvidence, 'evidence was not stored');
+    assert.ok(res.body.evidenceCheckedAt, 'evidence timestamp missing');
+    assert.equal(res.body.status, before.body.status);
+  });
+
+  await check('a project with no checkout reports an explicit evidence error', async () => {
+    const res = await request('GET', `${base}/api/work-items/${encodeURIComponent(workItemId)}`);
+    const ev = res.body.gitEvidence;
+    if (!ev.ok) {
+      assert.ok(ev.error && ev.error.length > 0, 'missing evidence error message');
+    } else {
+      assert.ok(Array.isArray(ev.commits));
+    }
+  });
+
+  await check('rejects refreshing evidence for an unknown work item', async () => {
+    assert.equal((await request('POST', `${base}/api/work-items/work-item:nope/refresh-evidence`, {})).status, 404);
+  });
+
   console.log('workspace ui');
 
   await check('serves the project workspace page and its controls', async () => {
@@ -327,6 +365,9 @@ async function main() {
     }
     assert.ok(html.includes('wi-edit-criteria'), 'criteria editor missing from the detail modal');
     assert.ok(html.includes('regenerateDraft'), 'generate draft control missing');
+    assert.ok(html.includes('id="wi-evidence"'), 'evidence panel missing');
+    assert.ok(html.includes('refreshEvidence'), 'evidence refresh control missing');
+    assert.ok(html.includes('confirmCompletion'), 'completion confirmation missing');
     assert.ok(html.includes("location.hash='#/project?project="), 'project card does not open the workspace');
     assert.ok(html.includes("'project'"), 'project route is not registered');
   });

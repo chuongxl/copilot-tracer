@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getTraces, getTrace, getSessionSummary, getDashboard, updateProjectLocalPath, getProjectTraces, getProjectSessionSummary, projectExists } from './db.js';
-import { applyWorkItemDraft, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
+import { applyWorkItemDraft, CompletionNotConfirmedError, refreshWorkItemEvidence, backfillWorkItems, buildWorkItemDraft, createWorkItem, deleteWorkItem, getUncategorizedTraces, getWorkItem, getWorkItems, installWorkItemExtraction, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, } from './workItemService.js';
 import { isWorkItemKind } from './workItemExtraction.js';
 import { WORK_ITEM_STATUSES } from './types.js';
 import { traceEvents } from './proxy.js';
@@ -194,7 +194,7 @@ ${prompt.trim()}`;
         }));
     });
     app.patch('/api/work-items/:id', (req, res) => {
-        const { title, summary, kind, status, acceptanceCriteria } = req.body;
+        const { title, summary, kind, status, acceptanceCriteria, confirmCompletion, completionNote } = req.body;
         if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
             res.status(400).json({ error: 'title must be a non-empty string' });
             return;
@@ -216,13 +216,38 @@ ${prompt.trim()}`;
             res.status(400).json({ error: 'acceptanceCriteria must be an array of strings' });
             return;
         }
-        const updated = updateWorkItem(req.params.id, {
-            title: title,
-            summary: summary,
-            kind: kind,
-            status: status,
-            acceptanceCriteria: acceptanceCriteria,
-        });
+        if (completionNote !== undefined && completionNote !== null && typeof completionNote !== 'string') {
+            res.status(400).json({ error: 'completionNote must be a string or null' });
+            return;
+        }
+        let updated;
+        try {
+            updated = updateWorkItem(req.params.id, {
+                title: title,
+                summary: summary,
+                kind: kind,
+                status: status,
+                acceptanceCriteria: acceptanceCriteria,
+                confirmCompletion: confirmCompletion === true,
+                completionNote: completionNote,
+            });
+        }
+        catch (error) {
+            if (error instanceof CompletionNotConfirmedError) {
+                res.status(409).json({ error: error.message, needsConfirmation: true });
+                return;
+            }
+            throw error;
+        }
+        if (!updated) {
+            res.status(404).json({ error: 'work item not found' });
+            return;
+        }
+        res.json(updated);
+    });
+    // Re-read git for this work item. Read-only, and never changes status.
+    app.post('/api/work-items/:id/refresh-evidence', (req, res) => {
+        const updated = refreshWorkItemEvidence(req.params.id);
         if (!updated) {
             res.status(404).json({ error: 'work item not found' });
             return;

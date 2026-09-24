@@ -203,6 +203,78 @@ check('kind is a majority vote across prompts', () => {
   assert.equal(draft.kind, 'bug');
 });
 
+// ── Git evidence ──────────────────────────────────────────────────────────────
+
+console.log('git evidence');
+
+const { collectGitEvidence, matchEvidenceToKeys } = await import('../dist/workItemGitEvidence.js');
+
+check('a missing project path is an explicit error, not a throw', () => {
+  const ev = collectGitEvidence(null);
+  assert.equal(ev.ok, false);
+  assert.match(ev.error, /No local path/i);
+  assert.deepEqual(ev.commits, []);
+});
+
+check('a path that does not exist is reported as such', () => {
+  const ev = collectGitEvidence(path.join(tempHome, 'nope-does-not-exist'));
+  assert.equal(ev.ok, false);
+  assert.match(ev.error, /not found/i);
+});
+
+check('a directory that is not a repo is reported as such', () => {
+  const plain = path.join(tempHome, 'plain-dir');
+  fs.mkdirSync(plain, { recursive: true });
+  const ev = collectGitEvidence(plain);
+  assert.equal(ev.ok, false);
+  assert.match(ev.error, /not a git repository/i);
+});
+
+check('reads branch and commits from a real checkout', () => {
+  const ev = collectGitEvidence(process.cwd());
+  assert.equal(ev.ok, true);
+  assert.equal(ev.error, null);
+  assert.ok(ev.commits.length > 0);
+  assert.ok(ev.commits[0].hash.length >= 7);
+  assert.ok(ev.commits[0].subject.length > 0);
+});
+
+check('matches commits and branches to ticket keys', () => {
+  const evidence = {
+    ok: true,
+    error: null,
+    projectPath: '/tmp/repo',
+    branch: 'feature/ABC-123-filters',
+    remoteUrl: 'git@github.com:acme/app.git',
+    commits: [
+      { hash: 'a1', subject: 'ABC-123 add the filter', author: 'x', dateTime: '2026-01-01T00:00:00Z' },
+      { hash: 'b2', subject: 'fix typo', author: 'x', dateTime: '2026-01-02T00:00:00Z' },
+      { hash: 'c3', subject: 'close acme/app#42', author: 'x', dateTime: '2026-01-03T00:00:00Z' },
+    ],
+    collectedAt: '2026-01-03T00:00:00Z',
+    version: '1.0.0',
+  };
+
+  const jira = matchEvidenceToKeys(evidence, ['ABC-123']);
+  assert.deepEqual(jira.commits.map((c) => c.hash), ['a1']);
+  assert.equal(jira.branchMatches, true);
+
+  const gh = matchEvidenceToKeys(evidence, ['acme/app#42']);
+  assert.deepEqual(gh.commits.map((c) => c.hash), ['c3']);
+  assert.equal(gh.branchMatches, false);
+
+  assert.deepEqual(matchEvidenceToKeys(evidence, []).commits, []);
+});
+
+check('a partial key does not match a longer ticket', () => {
+  const evidence = {
+    ok: true, error: null, projectPath: '/tmp/repo', branch: null, remoteUrl: null,
+    commits: [{ hash: 'a1', subject: 'ABC-1234 unrelated', author: 'x', dateTime: '2026-01-01T00:00:00Z' }],
+    collectedAt: '2026-01-01T00:00:00Z', version: '1.0.0',
+  };
+  assert.deepEqual(matchEvidenceToKeys(evidence, ['ABC-123']).commits, []);
+});
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 const service = await import('../dist/workItemService.js').catch(() => null);

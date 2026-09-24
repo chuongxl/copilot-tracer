@@ -697,7 +697,12 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
     });
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
-    if (!res.ok) throw new Error((data && data.error) || `Request failed: ${res.status}`);
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `Request failed: ${res.status}`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
     return data;
   }
 
@@ -1000,11 +1005,15 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       <div class="ws-actions" style="margin-bottom:18px">
         <button type="button" class="ws-btn" id="wi-save-btn" onclick="saveWorkItem()">Save changes</button>
         <button type="button" class="ws-btn" id="wi-draft-btn" onclick="regenerateDraft()">Generate draft</button>
+        <button type="button" class="ws-btn" id="wi-evidence-btn" onclick="refreshEvidence()">Check git evidence</button>
         <button type="button" class="ws-btn danger" onclick="removeWorkItem()">Delete work item</button>
         <span class="ws-status" id="wi-save-status"></span>
       </div>
 
-      <div class="dash-section-title" style="padding:0 0 8px">Linked prompts (${item.traces.length})</div>
+      <div class="dash-section-title" style="padding:0 0 8px">Git evidence</div>
+      <div id="wi-evidence">${renderEvidence(item)}</div>
+
+      <div class="dash-section-title" style="padding:16px 0 8px">Linked prompts (${item.traces.length})</div>
       <div>${traces}</div>
 
       <div class="wi-meta" style="margin-top:16px">
@@ -1023,21 +1032,73 @@ Reply with ONLY the rewritten prompt. No explanation, no preamble.`;
       </div>`;
   }
 
-  async function saveWorkItem() {
+  async function saveWorkItem(confirmCompletion) {
     const statusEl = document.getElementById('wi-save-status');
     statusEl.textContent = 'Saving…';
+    const payload = {
+      title: document.getElementById('wi-edit-title').value.trim(),
+      summary: document.getElementById('wi-edit-summary').value,
+      kind: document.getElementById('wi-edit-kind').value,
+      status: document.getElementById('wi-edit-status').value,
+      acceptanceCriteria: document.getElementById('wi-edit-criteria').value
+        .split('\n').map(l => l.trim()).filter(Boolean),
+    };
+    if (confirmCompletion) payload.confirmCompletion = true;
+
     try {
-      const item = await api('PATCH', `/api/work-items/${encodeURIComponent(openWorkItemId)}`, {
-        title: document.getElementById('wi-edit-title').value.trim(),
-        summary: document.getElementById('wi-edit-summary').value,
-        kind: document.getElementById('wi-edit-kind').value,
-        status: document.getElementById('wi-edit-status').value,
-        acceptanceCriteria: document.getElementById('wi-edit-criteria').value
-          .split('\n').map(l => l.trim()).filter(Boolean),
-      });
+      const item = await api('PATCH', `/api/work-items/${encodeURIComponent(openWorkItemId)}`, payload);
       renderWorkItemDetail(item);
       document.getElementById('wi-save-status').textContent = 'Saved';
       loadWorkItems();
+    } catch (e) {
+      // Closing a work item is a judgement call, so the server refuses until a
+      // person says so out loud.
+      if (e.status === 409 && !confirmCompletion
+        && confirm('Mark this work item as done? Git evidence and prompt counts cannot decide this for you.')) {
+        await saveWorkItem(true);
+        return;
+      }
+      statusEl.textContent = e.message;
+    }
+  }
+
+  function renderEvidence(item) {
+    const ev = item.gitEvidence;
+    if (!ev) {
+      return '<div style="color:#8b949e;font-size:12px;padding:4px 0">Not checked yet. Evidence is read-only and never changes status on its own.</div>';
+    }
+    if (!ev.ok) {
+      return `<div class="ws-error" role="alert">${escHtml(ev.error || 'Git evidence unavailable')}</div>`;
+    }
+
+    const head = `
+      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">
+        Branch <span style="color:#c9d1d9">${escHtml(ev.branch || 'unknown')}</span>${ev.branchMatches ? ' <span class="tag tag-ref">matches ticket</span>' : ''}
+        ${ev.remoteUrl ? ` · ${escHtml(ev.remoteUrl)}` : ''}
+        · checked ${fmtDateTime(ev.collectedAt)}
+      </div>`;
+
+    const commits = ev.commits.length
+      ? ev.commits.map(c => `
+          <div class="wi-trace-row">
+            <span class="wi-trace-prompt" title="${escHtml(c.subject)}">${escHtml(truncate(c.subject, 110))}</span>
+            <span class="inbox-time">${escHtml(c.hash.slice(0, 7))}</span>
+            <span class="inbox-time">${fmtDateTime(c.dateTime)}</span>
+          </div>`).join('')
+      : '<div style="color:#8b949e;font-size:12px;padding:4px 0">No commit mentions this ticket yet.</div>';
+
+    return head + commits;
+  }
+
+  async function refreshEvidence() {
+    const statusEl = document.getElementById('wi-save-status');
+    statusEl.textContent = 'Checking git…';
+    try {
+      const item = await api('POST', `/api/work-items/${encodeURIComponent(openWorkItemId)}/refresh-evidence`, {});
+      renderWorkItemDetail(item);
+      document.getElementById('wi-save-status').textContent = item.gitEvidence && item.gitEvidence.ok
+        ? `Found ${item.gitEvidence.commits.length} matching commit(s)`
+        : 'No git evidence available';
     } catch (e) {
       statusEl.textContent = e.message;
     }
