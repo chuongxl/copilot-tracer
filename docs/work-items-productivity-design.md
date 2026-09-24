@@ -49,7 +49,7 @@ Project
 | `id` | text primary key | Stable internal ID |
 | `project_id` | text, required | Owning project |
 | `title` | text, required | Editable human-readable title |
-| `kind` | enum text | `feature`, `bug`, `task`, `refactor`, `investigation`, `documentation`, `operations`, `unknown` |
+| `kind` | enum text | `feature`, `bug`, `task`, `refactor`, `investigation`, `performance`, `documentation`, `operations`, `unknown` |
 | `status` | enum text | `detected`, `active`, `paused`, `blocked`, `completed`, `archived` |
 | `summary` | text nullable | Extracted or edited objective |
 | `acceptance_criteria` | JSON text nullable | Extracted or edited criteria |

@@ -10,10 +10,12 @@ import type { TicketReferenceType, WorkItemDraft, WorkItemKind } from './workIte
 import { collectGitEvidence, matchEvidenceToKeys } from './workItemGitEvidence.js';
 import type {
   CreateWorkItemInput,
+  DismissedTrace,
   TraceEntry,
   UpdateWorkItemInput,
   WorkItem,
   WorkItemDetail,
+  WorkItemDismissReason,
   WorkItemEvidenceResult,
   WorkItemLinkSource,
   WorkItemReference,
@@ -204,7 +206,7 @@ export function findWorkItemIdByReference(
   return row?.id ?? null;
 }
 
-/** Traces in a project that no work item has claimed yet. Powers the inbox. */
+/** Traces in a project that no work item has claimed and nobody has dismissed. */
 export function getUncategorizedTraces(projectId: string, limit = 100): WorkItemTraceSummary[] {
   const rows = db.prepare(`
     SELECT t.id, t.session_id, t.date_time, t.prompt, t.tokens_total, t.ai_credits,
@@ -213,6 +215,7 @@ export function getUncategorizedTraces(projectId: string, limit = 100): WorkItem
     JOIN sessions s ON s.id = t.session_id
     WHERE s.project_id = ?
       AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
+      AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
     ORDER BY t.date_time DESC
     LIMIT ?
   `).all(projectId, limit) as Array<Record<string, unknown>>;
@@ -227,6 +230,64 @@ export function getUncategorizedTraces(projectId: string, limit = 100): WorkItem
     durationMs: (t.duration_ms as number) ?? 0,
     status: t.status as TraceEntry['status'],
     linkSource: 'detected' as WorkItemLinkSource,
+  }));
+}
+
+// ── Inbox dismissal ───────────────────────────────────────────────────────────
+
+/**
+ * Take a prompt out of the uncategorized inbox without touching the trace.
+ * Returns false when the trace does not belong to the project, so a stale page
+ * cannot dismiss someone else's prompt.
+ */
+export function dismissTrace(
+  projectId: string,
+  traceId: string,
+  reason: WorkItemDismissReason = 'ignored',
+): boolean {
+  const owns = db.prepare(`
+    SELECT 1 FROM traces t JOIN sessions s ON s.id = t.session_id
+    WHERE t.id = ? AND s.project_id = ?
+  `).get(traceId, projectId);
+  if (!owns) return false;
+
+  db.prepare(`
+    INSERT INTO work_item_dismissed_traces (trace_id, project_id, reason, dismissed_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(trace_id) DO UPDATE SET reason = excluded.reason, dismissed_at = excluded.dismissed_at
+  `).run(traceId, projectId, reason, new Date().toISOString());
+  return true;
+}
+
+/** Put a dismissed prompt back in the inbox. */
+export function restoreDismissedTrace(projectId: string, traceId: string): boolean {
+  return db.prepare('DELETE FROM work_item_dismissed_traces WHERE trace_id = ? AND project_id = ?')
+    .run(traceId, projectId).changes > 0;
+}
+
+export function getDismissedTraces(projectId: string, limit = 100): DismissedTrace[] {
+  const rows = db.prepare(`
+    SELECT t.id, t.session_id, t.date_time, t.prompt, t.tokens_total, t.ai_credits,
+           t.duration_ms, t.status, d.reason, d.dismissed_at
+    FROM work_item_dismissed_traces d
+    JOIN traces t ON t.id = d.trace_id
+    WHERE d.project_id = ?
+    ORDER BY d.dismissed_at DESC
+    LIMIT ?
+  `).all(projectId, limit) as Array<Record<string, unknown>>;
+
+  return rows.map((t) => ({
+    id: t.id as string,
+    sessionId: t.session_id as string,
+    dateTime: t.date_time as string,
+    prompt: t.prompt as string,
+    tokens: (t.tokens_total as number) ?? 0,
+    credits: (t.ai_credits as number) ?? 0,
+    durationMs: (t.duration_ms as number) ?? 0,
+    status: t.status as TraceEntry['status'],
+    linkSource: 'manual' as WorkItemLinkSource,
+    reason: t.reason as WorkItemDismissReason,
+    dismissedAt: t.dismissed_at as string,
   }));
 }
 
@@ -287,7 +348,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
 
 export class CompletionNotConfirmedError extends Error {
   constructor() {
-    super('Marking a work item done needs explicit confirmation. Send confirmCompletion: true.');
+    super('Marking a work item completed needs explicit confirmation. Send confirmCompletion: true.');
     this.name = 'CompletionNotConfirmedError';
   }
 }
@@ -298,8 +359,8 @@ export function updateWorkItem(id: string, input: UpdateWorkItemInput): WorkItem
   if (!existing) return null;
 
   // Git evidence and prompt counts can suggest an item is finished, but only a
-  // person decides that, so the move to done needs an explicit confirmation.
-  if (input.status === 'done' && existing.status !== 'done' && input.confirmCompletion !== true) {
+  // person decides that, so the move to completed needs an explicit confirmation.
+  if (input.status === 'completed' && existing.status !== 'completed' && input.confirmCompletion !== true) {
     throw new CompletionNotConfirmedError();
   }
 
@@ -340,6 +401,148 @@ export function deleteWorkItem(id: string): boolean {
   return run();
 }
 
+// ── Merge and split ───────────────────────────────────────────────────────────
+
+export class WorkItemMergeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkItemMergeError';
+  }
+}
+
+export class WorkItemSplitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkItemSplitError';
+  }
+}
+
+/**
+ * Fold `sourceIds` into `targetId`: every trace link, ticket reference and
+ * acceptance criterion moves across, then the sources are removed. Raw traces
+ * are untouched, so a bad merge costs nothing but a re-split.
+ */
+export function mergeWorkItems(targetId: string, sourceIds: string[]): WorkItemDetail {
+  const sources = [...new Set(sourceIds)].filter((sourceId) => sourceId !== targetId);
+  if (!sources.length) throw new WorkItemMergeError('Pick at least one other work item to merge in.');
+
+  const run = db.transaction(() => {
+    const target = db.prepare('SELECT id, project_id, summary, acceptance_criteria FROM work_items WHERE id = ?')
+      .get(targetId) as
+      | { id: string; project_id: string; summary: string | null; acceptance_criteria: string | null }
+      | undefined;
+    if (!target) throw new WorkItemMergeError('Target work item not found.');
+
+    const criteria = parseCriteria(target.acceptance_criteria);
+    const seenCriteria = new Set(criteria.map((c) => c.trim().toLowerCase()));
+    let summary = target.summary;
+
+    for (const sourceId of sources) {
+      const source = db.prepare('SELECT id, project_id, summary, acceptance_criteria FROM work_items WHERE id = ?')
+        .get(sourceId) as
+        | { id: string; project_id: string; summary: string | null; acceptance_criteria: string | null }
+        | undefined;
+      if (!source) throw new WorkItemMergeError(`Work item ${sourceId} not found.`);
+      if (source.project_id !== target.project_id) {
+        throw new WorkItemMergeError('Work items from different projects cannot be merged.');
+      }
+
+      db.prepare(`
+        INSERT INTO work_item_traces (work_item_id, trace_id, linked_at, link_source, confidence)
+        SELECT ?, trace_id, linked_at, link_source, confidence
+        FROM work_item_traces WHERE work_item_id = ?
+        ON CONFLICT(work_item_id, trace_id) DO NOTHING
+      `).run(targetId, sourceId);
+
+      db.prepare(`
+        INSERT INTO work_item_references (work_item_id, reference_type, reference_key, url, created_at)
+        SELECT ?, reference_type, reference_key, url, created_at
+        FROM work_item_references WHERE work_item_id = ?
+        ON CONFLICT(work_item_id, reference_type, reference_key)
+          DO UPDATE SET url = COALESCE(excluded.url, work_item_references.url)
+      `).run(targetId, sourceId);
+
+      if (!summary?.trim() && source.summary?.trim()) summary = source.summary;
+
+      for (const criterion of parseCriteria(source.acceptance_criteria)) {
+        const key = criterion.trim().toLowerCase();
+        if (!key || seenCriteria.has(key)) continue;
+        seenCriteria.add(key);
+        criteria.push(criterion);
+      }
+
+      db.prepare('DELETE FROM work_item_traces WHERE work_item_id = ?').run(sourceId);
+      db.prepare('DELETE FROM work_item_references WHERE work_item_id = ?').run(sourceId);
+      db.prepare('DELETE FROM work_items WHERE id = ?').run(sourceId);
+    }
+
+    db.prepare('UPDATE work_items SET summary = ?, acceptance_criteria = ?, updated_at = ? WHERE id = ?')
+      .run(summary, JSON.stringify(criteria), new Date().toISOString(), targetId);
+  });
+
+  run();
+  return getWorkItem(targetId) as WorkItemDetail;
+}
+
+/**
+ * Move `traceIds` out of `id` into a brand new work item. At least one trace
+ * must stay behind, otherwise this is a rename and should go through PATCH.
+ */
+export function splitWorkItem(
+  id: string,
+  input: { title: string; traceIds: string[]; kind?: WorkItemKind },
+): { source: WorkItemDetail; created: WorkItemDetail } {
+  const title = input.title?.trim();
+  if (!title) throw new WorkItemSplitError('The new work item needs a title.');
+
+  const traceIds = [...new Set(input.traceIds ?? [])];
+  if (!traceIds.length) throw new WorkItemSplitError('Pick at least one prompt to split out.');
+
+  const createdId = `work-item:${randomUUID()}`;
+
+  const run = db.transaction(() => {
+    const source = db.prepare('SELECT id, project_id, kind FROM work_items WHERE id = ?').get(id) as
+      | { id: string; project_id: string; kind: string }
+      | undefined;
+    if (!source) throw new WorkItemSplitError('Work item not found.');
+
+    const linked = db.prepare('SELECT trace_id FROM work_item_traces WHERE work_item_id = ?')
+      .all(id) as Array<{ trace_id: string }>;
+    const linkedIds = new Set(linked.map((row) => row.trace_id));
+
+    for (const traceId of traceIds) {
+      if (!linkedIds.has(traceId)) {
+        throw new WorkItemSplitError(`Prompt ${traceId} is not linked to this work item.`);
+      }
+    }
+    if (traceIds.length >= linkedIds.size) {
+      throw new WorkItemSplitError('Leave at least one prompt on the original work item.');
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO work_items (
+        id, project_id, title, summary, kind, status, source, summary_source,
+        confidence, extractor_version, created_at, updated_at
+      ) VALUES (?, ?, ?, NULL, ?, 'active', 'manual', 'generated', 0, NULL, ?, ?)
+    `).run(createdId, source.project_id, title, input.kind ?? source.kind, now, now);
+
+    const move = db.prepare(`
+      UPDATE work_item_traces SET work_item_id = ?, link_source = 'manual'
+      WHERE work_item_id = ? AND trace_id = ?
+    `);
+    for (const traceId of traceIds) move.run(createdId, id, traceId);
+
+    db.prepare('UPDATE work_items SET updated_at = ? WHERE id = ?').run(now, id);
+  });
+
+  run();
+  return {
+    source: getWorkItem(id) as WorkItemDetail,
+    created: getWorkItem(createdId) as WorkItemDetail,
+  };
+}
+
 export function linkTraceToWorkItem(input: WorkItemTraceLinkInput): void {
   db.prepare(`
     INSERT INTO work_item_traces (work_item_id, trace_id, linked_at, link_source, confidence)
@@ -352,6 +555,9 @@ export function linkTraceToWorkItem(input: WorkItemTraceLinkInput): void {
     input.linkSource ?? 'detected',
     input.confidence ?? 0,
   );
+  // Claiming a prompt overrides an earlier dismissal, otherwise the trace would
+  // stay hidden from the inbox while also belonging to an item.
+  db.prepare('DELETE FROM work_item_dismissed_traces WHERE trace_id = ?').run(input.traceId);
 }
 
 export function unlinkTraceFromWorkItem(workItemId: string, traceId: string): boolean {
@@ -384,6 +590,7 @@ export function persistWorkItemEvidence(
           title: reference.key,
           summary: deriveWorkItemSummary(trace.prompt ?? ''),
           kind: evidence.kind,
+          status: 'detected',
           source: 'detected',
           confidence: evidence.confidence,
           extractorVersion: evidence.extractorVersion,

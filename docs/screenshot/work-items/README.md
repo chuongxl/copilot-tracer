@@ -89,10 +89,32 @@ sentence is already the summary, and printing it twice helps nobody.
 The browser run complements, and does not replace, the scripted suites:
 
 ```bash
-node scripts/test-work-item-extraction.mjs     # 51 assertions
-node scripts/verify-work-items.mjs             # 29 assertions
+node scripts/test-work-item-extraction.mjs     # 64 assertions
+node scripts/verify-work-items.mjs             # 42 assertions
 node scripts/evaluate-work-item-grouping.mjs   # 24 fixtures
 ```
 
 Console during the browser run was clean apart from a pre-existing
 `favicon.ico` 404 and the deliberate 409 from the completion gate.
+
+## Gap closure run (screenshots 11 to 18)
+
+A second run covers the six gaps closed in
+`docs/work-items-gap-closure.md`.
+
+| Shot | What it shows |
+|------|---------------|
+| `11-dashboard-work-item-rollup.png` | Project cards carry work-item counts, ticket counts, unlinked counts and recent titles. Two new totals at the top. |
+| `12-inbox-dismiss-actions.png` | The inbox has four actions: Attach, New item, Ignore, Mark unrelated. |
+| `13-inbox-after-dismiss.png` | Marking a prompt unrelated drops the count from 3 to 2 and moves it to a Dismissed list with Restore. |
+| `14-work-item-list-statuses.png` | Detected items in the list. This shot is what exposed the duplicate badge bug. |
+| `15-detail-confirm-merge-split.png` | Detail view with Confirm, Merge in… and Split out…. |
+| `16-after-split.png` | One prompt split into a new item: PAY-412 drops to 2 prompts, the list grows to 5. |
+| `17-after-merge.png` | Merging it back: PAY-412 returns to 3 prompts, the list returns to 4. |
+| `18-confirmed-active.png` | Confirm promotes a detected item to active and the button disappears. |
+
+**Bug this run caught.** Every work item card read "DETECTED DETECTED". The
+status badge and the source badge both render the raw enum, and after auto-items
+started life as `detected` the two words collided. The source badge now reads
+"auto". No assertion would have flagged this; both values were correct on their
+own.

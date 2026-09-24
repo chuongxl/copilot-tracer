@@ -18,13 +18,14 @@ export type WorkItemKind =
   | 'task'
   | 'refactor'
   | 'investigation'
+  | 'performance'
   | 'documentation'
   | 'operations'
   | 'unknown';
 
 export const WORK_ITEM_KINDS: readonly WorkItemKind[] = [
   'feature', 'bug', 'task', 'refactor',
-  'investigation', 'documentation', 'operations', 'unknown',
+  'investigation', 'performance', 'documentation', 'operations', 'unknown',
 ];
 
 export interface TicketReference {
@@ -118,6 +119,13 @@ function extractUrlReferences(prompt: string, chars: string[]): Located[] {
   return found;
 }
 
+/** A bare `#42` carries no repo, so it is recorded as evidence but never auto-groups. */
+export const BARE_ISSUE_CONFIDENCE = 0.6;
+
+// `#42` also spells a CSS colour and a heading anchor. Rather than guess, the
+// bare form scores below AUTO_LINK_CONFIDENCE so it shows as a suggestion.
+const COLOR_CONTEXT_RE = /(colou?r|background|bg|fill|stroke|border|shadow|hex)\s*[:=]?\s*$/i;
+
 function extractPlainReferences(residual: string): Located[] {
   const found: Located[] = [];
 
@@ -146,6 +154,24 @@ function extractPlainReferences(residual: string): Located[] {
         url: null,
         sourceText: m[0],
         confidence: 0.8,
+      },
+    });
+  }
+
+  // Bare `#42`. The leading class rejects `owner/repo#42` (already matched
+  // above) and `#42a5f5`, which the digit-only body also excludes.
+  const bareIssueRe = /(^|[^\w/#.-])#(\d{1,5})(?![\w-])/g;
+  for (let m = bareIssueRe.exec(residual); m; m = bareIssueRe.exec(residual)) {
+    const at = m.index + m[1].length;
+    if (COLOR_CONTEXT_RE.test(residual.slice(Math.max(0, at - 16), at))) continue;
+    found.push({
+      index: at,
+      ref: {
+        type: 'github_issue',
+        key: `#${m[2]}`,
+        url: null,
+        sourceText: `#${m[2]}`,
+        confidence: BARE_ISSUE_CONFIDENCE,
       },
     });
   }
@@ -205,6 +231,12 @@ const KIND_PHRASES: Record<Exclude<WorkItemKind, 'unknown'>, string[]> = {
     'refactor', 'clean up', 'cleanup', 'simplify', 'rename', 'restructure',
     'tech debt', 'modernize', 'deduplicate',
   ],
+  performance: [
+    'slow', 'slower', 'slowness', 'sluggish', 'latency', 'optimize', 'optimise',
+    'optimization', 'optimisation', 'performance', 'perf', 'speed up', 'speedup',
+    'bottleneck', 'memory leak', 'throughput', 'p95', 'p99', 'profiling', 'profile',
+    'timing out', 'times out', 'too slow',
+  ],
   documentation: [
     'document', 'documentation', 'docs', 'readme', 'changelog', 'write up', 'adr',
   ],
@@ -220,7 +252,8 @@ const KIND_PHRASES: Record<Exclude<WorkItemKind, 'unknown'>, string[]> = {
 
 // Checked in order so a tie resolves to the more actionable classification.
 const KIND_PRIORITY: Exclude<WorkItemKind, 'unknown'>[] = [
-  'bug', 'investigation', 'feature', 'refactor', 'documentation', 'operations', 'task',
+  'bug', 'performance', 'investigation', 'feature', 'refactor',
+  'documentation', 'operations', 'task',
 ];
 
 function escapeRegExp(value: string): string {

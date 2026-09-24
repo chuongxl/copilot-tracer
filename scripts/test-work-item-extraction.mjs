@@ -26,7 +26,7 @@ function check(name, fn) {
   }
 }
 
-const { extractWorkItemEvidence, deriveWorkItemSummary, generateWorkItemDraft } = await import('../dist/workItemExtraction.js');
+const { extractWorkItemEvidence, deriveWorkItemSummary, generateWorkItemDraft, AUTO_LINK_CONFIDENCE } = await import('../dist/workItemExtraction.js');
 
 const bare = (refs) => refs.map((r) => ({ type: r.type, key: r.key }));
 
@@ -113,8 +113,34 @@ check('classifies documentation work', () => {
   assert.equal(extractWorkItemEvidence('Document the work item API in the readme').kind, 'documentation');
 });
 
+check('classifies performance work', () => {
+  assert.equal(extractWorkItemEvidence('The dashboard is slow, optimize the query latency').kind, 'performance');
+  assert.equal(extractWorkItemEvidence('Track down the bottleneck in trace ingestion').kind, 'performance');
+});
+
 check('falls back to unknown without evidence', () => {
   assert.equal(extractWorkItemEvidence('dashboard API').kind, 'unknown');
+});
+
+check('reads a bare issue number but below the auto-link threshold', () => {
+  const refs = extractWorkItemEvidence('Please fix #42 today').references;
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].type, 'github_issue');
+  assert.equal(refs[0].key, '#42');
+  assert.ok(refs[0].confidence < AUTO_LINK_CONFIDENCE, 'a bare issue ref must not auto-group');
+});
+
+check('a bare issue number does not swallow a qualified one', () => {
+  const keys = extractWorkItemEvidence('see chuongxl/copilot-tracer#11 and #42')
+    .references.map((r) => r.key);
+  assert.deepEqual(keys, ['chuongxl/copilot-tracer#11', '#42']);
+});
+
+check('css colours are not issue references', () => {
+  assert.deepEqual(
+    extractWorkItemEvidence('set the background to #42a5f5 and color: #123').references,
+    [],
+  );
 });
 
 check('returns empty evidence for a blank prompt', () => {
@@ -311,7 +337,7 @@ const service = await import('../dist/workItemService.js').catch(() => null);
 if (!service) {
   console.error('\nwork item service not built yet; persistence checks skipped');
 } else {
-  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, applyWorkItemDraft, buildWorkItemDraft } = service;
+  const { persistWorkItemEvidence, getWorkItems, getWorkItem, createWorkItem, linkTraceToWorkItem, unlinkTraceFromWorkItem, updateWorkItem, applyWorkItemDraft, buildWorkItemDraft, mergeWorkItems, splitWorkItem, dismissTrace, restoreDismissedTrace, getDismissedTraces, getUncategorizedTraces } = service;
   const { ensureProject, createSession, upsertTrace } = await import('../dist/db.js');
 
   const projectId = ensureProject('/tmp/work-item-test-project');
@@ -425,7 +451,7 @@ if (!service) {
 
   check('filters work items by status', () => {
     assert.ok(getWorkItems(projectId, 'active').length > 0);
-    assert.equal(getWorkItems(projectId, 'done').length, 0);
+    assert.equal(getWorkItems(projectId, 'completed').length, 0);
   });
 
   console.log('persistence: drafts');
@@ -474,6 +500,117 @@ if (!service) {
   check('applying a draft to an unknown work item returns null', () => {
     assert.equal(applyWorkItemDraft('work-item:missing'), null);
     assert.equal(buildWorkItemDraft('work-item:missing'), null);
+  });
+
+  console.log('persistence: merge and split');
+
+  check('merge folds traces, references and criteria into the target', () => {
+    const target = createWorkItem({ projectId, title: 'Merge target', kind: 'feature' });
+    const source = createWorkItem({
+      projectId,
+      title: 'Merge source',
+      summary: 'a summary worth keeping',
+      references: [{ type: 'jira', key: 'MRG-1', url: null }],
+    });
+    updateWorkItem(source.id, { acceptanceCriteria: ['the worker stops after three attempts'] });
+
+    const traceA = makeTrace('Merge me A');
+    const traceB = makeTrace('Merge me B');
+    linkTraceToWorkItem({ workItemId: target.id, traceId: traceA.id, linkSource: 'manual' });
+    linkTraceToWorkItem({ workItemId: source.id, traceId: traceB.id, linkSource: 'manual' });
+
+    const merged = mergeWorkItems(target.id, [source.id]);
+    assert.equal(merged.traceCount, 2);
+    assert.equal(merged.summary, 'a summary worth keeping');
+    assert.ok(merged.references.some((r) => r.key === 'MRG-1'));
+    assert.deepEqual(merged.acceptanceCriteria, ['the worker stops after three attempts']);
+    assert.equal(getWorkItem(source.id), null);
+    assert.ok(getWorkItems(projectId).every((w) => w.id !== source.id));
+  });
+
+  check('merge refuses itself, a missing item and a foreign project', () => {
+    const target = createWorkItem({ projectId, title: 'Guarded target' });
+    const foreign = createWorkItem({ projectId: otherProjectId, title: 'Somewhere else' });
+
+    assert.throws(() => mergeWorkItems(target.id, [target.id]), /at least one other/);
+    assert.throws(() => mergeWorkItems(target.id, ['work-item:missing']), /not found/);
+    assert.throws(() => mergeWorkItems(target.id, [foreign.id]), /different projects/);
+    assert.ok(getWorkItem(foreign.id), 'a rejected merge must not delete the source');
+  });
+
+  check('split moves the picked traces and leaves the rest behind', () => {
+    const item = createWorkItem({ projectId, title: 'Split me', kind: 'bug' });
+    const stay = makeTrace('Stays put');
+    const move = makeTrace('Moves out');
+    linkTraceToWorkItem({ workItemId: item.id, traceId: stay.id, linkSource: 'manual' });
+    linkTraceToWorkItem({ workItemId: item.id, traceId: move.id, linkSource: 'manual' });
+
+    const { source, created } = splitWorkItem(item.id, { title: 'New scope', traceIds: [move.id] });
+    assert.equal(created.title, 'New scope');
+    assert.equal(created.kind, 'bug');
+    assert.equal(created.status, 'active');
+    assert.equal(created.source, 'manual');
+    assert.deepEqual(created.traces.map((t) => t.id), [move.id]);
+    assert.deepEqual(source.traces.map((t) => t.id), [stay.id]);
+  });
+
+  check('split refuses to empty the original or move an unlinked trace', () => {
+    const item = createWorkItem({ projectId, title: 'Guarded split' });
+    const only = makeTrace('The only one');
+    linkTraceToWorkItem({ workItemId: item.id, traceId: only.id, linkSource: 'manual' });
+
+    assert.throws(() => splitWorkItem(item.id, { title: 'All of it', traceIds: [only.id] }), /at least one prompt/);
+    assert.throws(() => splitWorkItem(item.id, { title: 'Nope', traceIds: ['trace:missing'] }), /not linked/);
+    assert.throws(() => splitWorkItem(item.id, { title: '  ', traceIds: [only.id] }), /needs a title/);
+    assert.throws(() => splitWorkItem(item.id, { title: 'Empty', traceIds: [] }), /at least one prompt/);
+    assert.equal(getWorkItem(item.id).traceCount, 1);
+  });
+
+  console.log('persistence: inbox dismissal');
+
+  check('dismissing hides a prompt from the inbox without deleting it', () => {
+    const trace = makeTrace('An aside with no work item');
+    assert.ok(getUncategorizedTraces(projectId).some((t) => t.id === trace.id));
+
+    assert.equal(dismissTrace(projectId, trace.id, 'unrelated'), true);
+    assert.ok(!getUncategorizedTraces(projectId).some((t) => t.id === trace.id));
+
+    const dismissed = getDismissedTraces(projectId).find((t) => t.id === trace.id);
+    assert.ok(dismissed, 'dismissed prompt is missing from the list');
+    assert.equal(dismissed.reason, 'unrelated');
+    assert.equal(dismissed.prompt, 'An aside with no work item');
+  });
+
+  check('restoring returns the prompt to the inbox', () => {
+    const trace = makeTrace('Briefly dismissed');
+    dismissTrace(projectId, trace.id);
+    assert.equal(restoreDismissedTrace(projectId, trace.id), true);
+    assert.ok(getUncategorizedTraces(projectId).some((t) => t.id === trace.id));
+    assert.equal(restoreDismissedTrace(projectId, trace.id), false);
+  });
+
+  check('linking a dismissed prompt clears the dismissal', () => {
+    const trace = makeTrace('Dismissed then claimed');
+    const item = createWorkItem({ projectId, title: 'Claims the aside' });
+    dismissTrace(projectId, trace.id);
+
+    linkTraceToWorkItem({ workItemId: item.id, traceId: trace.id, linkSource: 'manual' });
+    assert.ok(!getDismissedTraces(projectId).some((t) => t.id === trace.id));
+  });
+
+  check('a trace from another project cannot be dismissed', () => {
+    const trace = makeTrace('Belongs to this project');
+    assert.equal(dismissTrace(otherProjectId, trace.id, 'ignored'), false);
+    assert.equal(dismissTrace(projectId, 'trace:missing'), false);
+  });
+
+  check('detected work items start unconfirmed', () => {
+    const trace = makeTrace('Fix NEWKEY-7 before the release');
+    persistWorkItemEvidence(trace, projectId);
+    const item = getWorkItems(projectId).find((w) => w.title === 'NEWKEY-7');
+    assert.ok(item, 'expected a detected work item');
+    assert.equal(item.status, 'detected');
+    assert.equal(item.source, 'detected');
   });
 }
 
