@@ -263,54 +263,101 @@ export function createSession(id, projectId) {
       END
   `).run(id, new Date().toISOString(), projectId ?? null);
 }
+const EMPTY_WORK_ITEM_SUMMARY = {
+    total: 0,
+    active: 0,
+    detected: 0,
+    completed: 0,
+    ticketReferences: 0,
+    unlinkedPrompts: 0,
+    recent: [],
+};
 /**
- * Work-item rollup for one project card. Kept here rather than in
+ * Work-item rollups for a page of project cards. Kept here rather than in
  * workItemService so the dashboard query does not import the whole service.
+ *
+ * Batched over the whole page: four queries total, not four per card. The
+ * per-project version re-prepared its statements on every card, so a dashboard
+ * of twelve projects paid for forty-eight prepares it did not need.
  */
-function getProjectWorkItemSummary(projectId) {
+function getProjectWorkItemSummaries(projectIds) {
+    const summaries = new Map();
+    if (!projectIds.length)
+        return summaries;
+    for (const id of projectIds) {
+        summaries.set(id, { ...EMPTY_WORK_ITEM_SUMMARY, recent: [] });
+    }
+    const placeholders = projectIds.map(() => '?').join(', ');
     const counts = db.prepare(`
     SELECT
+      project_id,
       COUNT(*) as total,
       COALESCE(SUM(status = 'active'), 0) as active,
       COALESCE(SUM(status = 'detected'), 0) as detected,
       COALESCE(SUM(status = 'completed'), 0) as completed
-    FROM work_items WHERE project_id = ?
-  `).get(projectId);
+    FROM work_items
+    WHERE project_id IN (${placeholders})
+    GROUP BY project_id
+  `).all(...projectIds);
+    for (const row of counts) {
+        const summary = summaries.get(row.project_id);
+        if (!summary)
+            continue;
+        summary.total = row.total;
+        summary.active = row.active;
+        summary.detected = row.detected;
+        summary.completed = row.completed;
+    }
     const references = db.prepare(`
-    SELECT COUNT(DISTINCT r.reference_type || '|' || r.reference_key) as count
+    SELECT wi.project_id, COUNT(DISTINCT r.reference_type || '|' || r.reference_key) as count
     FROM work_item_references r
     JOIN work_items wi ON wi.id = r.work_item_id
-    WHERE wi.project_id = ?
-  `).get(projectId);
+    WHERE wi.project_id IN (${placeholders})
+    GROUP BY wi.project_id
+  `).all(...projectIds);
+    for (const row of references) {
+        const summary = summaries.get(row.project_id);
+        if (summary)
+            summary.ticketReferences = row.count;
+    }
     const unlinked = db.prepare(`
-    SELECT COUNT(*) as count
+    SELECT s.project_id, COUNT(*) as count
     FROM traces t
     JOIN sessions s ON s.id = t.session_id
-    WHERE s.project_id = ?
+    WHERE s.project_id IN (${placeholders})
       AND NOT EXISTS (SELECT 1 FROM work_item_traces wit WHERE wit.trace_id = t.id)
       AND NOT EXISTS (SELECT 1 FROM work_item_dismissed_traces d WHERE d.trace_id = t.id)
-  `).get(projectId);
+    GROUP BY s.project_id
+  `).all(...projectIds);
+    for (const row of unlinked) {
+        const summary = summaries.get(row.project_id);
+        if (summary)
+            summary.unlinkedPrompts = row.count;
+    }
+    // The window function does the per-project "top 3" that a LIMIT cannot do
+    // across groups.
     const recent = db.prepare(`
-    SELECT id, title, status, updated_at
-    FROM work_items
-    WHERE project_id = ? AND status NOT IN ('archived')
-    ORDER BY updated_at DESC
-    LIMIT 3
-  `).all(projectId);
-    return {
-        total: counts.total,
-        active: counts.active,
-        detected: counts.detected,
-        completed: counts.completed,
-        ticketReferences: references.count,
-        unlinkedPrompts: unlinked.count,
-        recent: recent.map((r) => ({
-            id: r.id,
-            title: r.title,
-            status: r.status,
-            updatedAt: r.updated_at,
-        })),
-    };
+    SELECT project_id, id, title, status, updated_at FROM (
+      SELECT
+        project_id, id, title, status, updated_at,
+        ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY updated_at DESC, id ASC) as rank
+      FROM work_items
+      WHERE project_id IN (${placeholders}) AND status NOT IN ('archived')
+    ) WHERE rank <= 3
+    ORDER BY project_id ASC, rank ASC
+  `).all(...projectIds);
+    for (const row of recent) {
+        const summary = summaries.get(row.project_id);
+        if (!summary)
+            continue;
+        summary.recent.push({
+            id: row.id,
+            title: row.title,
+            status: row.status,
+            updatedAt: row.updated_at,
+        });
+    }
+    return summaries;
 }
 export function getDashboard(page = 1, pageSize = 12, query = '') {
     const filter = query.trim();
@@ -345,16 +392,18 @@ export function getDashboard(page = 1, pageSize = 12, query = '') {
       COALESCE((SELECT SUM(tokens_total) FROM traces), 0) as tokens,
       COALESCE((SELECT SUM(ai_credits) FROM traces), 0) as credits
   `).get();
+    const workItemSummaries = getProjectWorkItemSummaries(projects.map((p) => p.id));
+    const lastSessionStmt = db.prepare(`
+    SELECT s.id,
+      COALESCE((SELECT SUM(tokens_total) FROM traces WHERE session_id = s.id), 0) as tokens,
+      COALESCE((SELECT SUM(ai_credits) FROM traces WHERE session_id = s.id), 0) as credits
+    FROM sessions s
+    WHERE s.project_id = ?
+    ORDER BY s.started_at DESC
+    LIMIT 1
+  `);
     const enriched = projects.map(p => {
-        const lastSession = db.prepare(`
-      SELECT s.id,
-        COALESCE((SELECT SUM(tokens_total) FROM traces WHERE session_id = s.id), 0) as tokens,
-        COALESCE((SELECT SUM(ai_credits) FROM traces WHERE session_id = s.id), 0) as credits
-      FROM sessions s
-      WHERE s.project_id = ?
-      ORDER BY s.started_at DESC
-      LIMIT 1
-    `).get(p.id);
+        const lastSession = lastSessionStmt.get(p.id);
         return {
             id: p.id,
             path: p.path,
@@ -365,7 +414,7 @@ export function getDashboard(page = 1, pageSize = 12, query = '') {
             totalCredits: p.total_credits || 0,
             lastActiveAt: p.last_active_at,
             lastSession: lastSession ?? null,
-            workItems: getProjectWorkItemSummary(p.id),
+            workItems: workItemSummaries.get(p.id) ?? { ...EMPTY_WORK_ITEM_SUMMARY, recent: [] },
         };
     });
     const workItemTotals = db.prepare(`

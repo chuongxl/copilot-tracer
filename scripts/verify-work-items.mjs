@@ -560,6 +560,31 @@ async function main() {
   // The project filter and the work item rollup share getDashboard. Filtering
   // must narrow the project list without disturbing either the rollups on the
   // surviving cards or the global headline totals.
+  // The rollups are fetched for the whole page in one go. The two ways that
+  // can break are a project silently losing its row and one project's numbers
+  // landing on another's card, so check both against the global totals.
+  await check('every project card carries its own rollup and none are swapped', async () => {
+    const res = await request('GET', `${base}/api/dashboard?pageSize=100`);
+    assert.equal(res.status, 200);
+
+    let detected = 0;
+    let completed = 0;
+    for (const p of res.body.projects) {
+      assert.ok(p.workItems, `project ${p.id} lost its rollup in the batch`);
+      assert.ok(Array.isArray(p.workItems.recent));
+      assert.ok(p.workItems.recent.length <= 3, `project ${p.id} exceeded the recent cap`);
+      assert.ok(
+        p.workItems.total >= p.workItems.recent.length,
+        `project ${p.id} shows more recent items than it has`,
+      );
+      detected += p.workItems.detected;
+      completed += p.workItems.completed;
+    }
+
+    assert.equal(detected, res.body.workItemTotals.detected, 'per-project detected counts do not sum to the total');
+    assert.equal(completed, res.body.workItemTotals.completed, 'per-project completed counts do not sum to the total');
+  });
+
   await check('the project filter narrows the list and keeps rollups intact', async () => {
     const res = await request('GET', `${base}/api/dashboard?q=verify-app`);
     assert.equal(res.status, 200);
